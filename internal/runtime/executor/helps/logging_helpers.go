@@ -783,3 +783,15 @@ func CreditsUsed(ctx context.Context) bool {
 	}
 	return false
 }
+
+// AppendCodexAPIResponseChunk observes existing SSE traffic even with logging off.
+func AppendCodexAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byte) {
+	for _, line := range bytes.Split(chunk, []byte("\n")) {
+		payload := bytes.TrimSpace(line)
+		if bytes.HasPrefix(payload, []byte("data:")) {
+			payload = bytes.TrimSpace(payload[5:])
+		}
+		logging.MergeResponseHeaders(ctx, ParseCodexQuotaEventHeaders(payload))
+	}
+	AppendAPIResponseChunk(ctx, cfg, chunk)
+}

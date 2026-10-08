@@ -50,6 +50,7 @@ func (q *QuotaState) ObserveResponseHeadersForProvider(provider string, headers 
 	}
 	q.Signals = next
 	q.ObservedAt = observedAt
+	q.BalanceWindows = AccountBalanceWindows(&Auth{Provider: provider, Quota: *q})
 	return true
 }
 
@@ -60,6 +61,7 @@ func (q *QuotaState) ClearObservationSignals() bool {
 		return false
 	}
 	q.Signals = nil
+	q.BalanceWindows = nil
 	q.ObservedAt = time.Time{}
 	return true
 }

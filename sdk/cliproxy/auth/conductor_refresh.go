@@ -115,6 +115,12 @@ func (m *Manager) queueRefreshUnschedule(authID string) {
 }
 
 func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
+	if a != nil && strings.EqualFold(a.Provider, "claude") {
+		cfg := m.runtimeConfigSnapshot()
+		if cfg != nil && cfg.Claude.ProxyOnly {
+			return false
+		}
+	}
 	if a == nil {
 		return false
 	}

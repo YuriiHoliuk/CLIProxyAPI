@@ -20,6 +20,9 @@ const (
 type claudeOAuthProfileFetcher func(context.Context, *cliproxyauth.Auth, string) (*claudeauth.OAuthProfile, error)
 
 func (e *ClaudeExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
+	if e.cfg != nil && e.cfg.Claude.ProxyOnly {
+		return false
+	}
 	apiKey, _ := claudeCreds(auth)
 	if !isClaudeOAuthToken(apiKey) || auth == nil {
 		return false
@@ -131,6 +134,9 @@ func (e *ClaudeExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxya
 }
 
 func (e *ClaudeExecutor) fetchClaudeOAuthProfile(ctx context.Context, auth *cliproxyauth.Auth, apiKey string) (*claudeauth.OAuthProfile, error) {
+	if e != nil && e.cfg != nil && e.cfg.Claude.ProxyOnly {
+		return nil, fmt.Errorf("Claude profile disabled in proxy-only mode")
+	}
 	if e == nil {
 		return nil, fmt.Errorf("fetch Claude OAuth profile: executor is nil")
 	}
@@ -147,6 +153,9 @@ func (e *ClaudeExecutor) fetchClaudeOAuthProfile(ctx context.Context, auth *clip
 }
 
 func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if e.cfg != nil && e.cfg.Claude.ProxyOnly {
+		return nil, fmt.Errorf("Claude refresh disabled in proxy-only mode")
+	}
 	log.Debugf("claude executor: refresh called")
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
 		return refreshed, err

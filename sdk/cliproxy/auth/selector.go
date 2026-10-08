@@ -1015,6 +1015,9 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 	now := time.Now()
 	availabilityCandidates := auths
+	if _, balanced := s.fallback.(*BalancedSelector); balanced {
+		availabilityCandidates = positiveWeightAuths(auths)
+	}
 	if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted {
 		availabilityCandidates = positiveWeightAuths(auths)
 	}

@@ -246,6 +246,9 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 
 // HttpRequest injects Claude credentials into the request and executes it.
 func (e *ClaudeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
+	if e.cfg != nil && e.cfg.Claude.ProxyOnly {
+		return nil, fmt.Errorf("generic Claude HTTP requests disabled in proxy-only mode")
+	}
 	if req == nil {
 		return nil, fmt.Errorf("claude executor: request is nil")
 	}

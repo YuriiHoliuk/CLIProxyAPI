@@ -113,6 +113,8 @@ func defaultPluginInstanceConfigNode() *yaml.Node {
 
 // ClaudeConfig configures provider-wide Claude request behavior.
 type ClaudeConfig struct {
+	// ProxyOnly disables Claude auth/profile/probe traffic and preserves native requests.
+	ProxyOnly bool `yaml:"proxy-only" json:"proxy-only"`
 	// ModelLevelCooling scopes Claude quota cooldowns to the requested model
 	// rather than cooling down the entire credential across all sibling models.
 	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`

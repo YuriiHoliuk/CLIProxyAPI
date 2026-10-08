@@ -134,6 +134,10 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
+	if h.cfg != nil && h.cfg.Claude.ProxyOnly && ((auth != nil && strings.EqualFold(auth.Provider, "claude")) || strings.HasSuffix(strings.ToLower(parsedURL.Hostname()), "anthropic.com") || strings.HasSuffix(strings.ToLower(parsedURL.Hostname()), "claude.com")) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Claude auxiliary requests disabled in proxy-only mode"})
+		return
+	}
 
 	reqHeaders := body.Header
 	if reqHeaders == nil {
