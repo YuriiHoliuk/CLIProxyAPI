@@ -155,3 +155,14 @@ func TestAPIResponseAttemptsAreSeparated(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexSSEQuotaObservedWithLoggingDisabled(t *testing.T) {
+	ctx := logging.WithResponseHeadersHolder(context.Background())
+	cfg := &config.Config{}
+	cfg.RequestLog = false
+	AppendCodexAPIResponseChunk(ctx, cfg, []byte("event: codex.rate_limits\ndata: {\"type\":\"codex.rate_limits\",\"rate_limits\":{\"primary\":{\"used_percent\":42,\"window_minutes\":300,\"reset_after_seconds\":123},\"secondary\":{\"used_percent\":10,\"window_minutes\":10080,\"reset_after_seconds\":456}}}\n\n"))
+	headers := logging.GetResponseHeaders(ctx)
+	if headers.Get("X-Codex-Primary-Used-Percent") != "42" {
+		t.Fatalf("SSE quota missing with request logging off: %v", headers)
+	}
+}

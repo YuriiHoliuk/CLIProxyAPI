@@ -69,6 +69,9 @@ func (h *Handler) FetchCredentialQuota(c *gin.Context) {
 	}
 
 	auth := h.authByIndex(authIndex)
+	if h.denyClaudeAuxiliary(c, auth) {
+		return
+	}
 	if auth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
 		return
@@ -145,6 +148,9 @@ func (h *Handler) ResetCredentialQuota(c *gin.Context) {
 	}
 
 	auth := h.authByIndex(authIndex)
+	if h.denyClaudeAuxiliary(c, auth) {
+		return
+	}
 	if auth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
 		return
@@ -265,6 +271,9 @@ func (h *Handler) FetchPluginQuota(c *gin.Context) {
 
 func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string) {
 	auth := h.authByIndex(authIndex)
+	if h.denyClaudeAuxiliary(c, auth) {
+		return
+	}
 	if auth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
 		return
@@ -315,6 +324,9 @@ func (h *Handler) ResetPluginQuota(c *gin.Context) {
 	}
 
 	auth := h.authByIndex(authIndex)
+	if h.denyClaudeAuxiliary(c, auth) {
+		return
+	}
 	if auth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
 		return
@@ -814,4 +826,12 @@ func mapProbeResponse(respBytes []byte, mapping map[string]any) (pluginapi.Quota
 		return out, fmt.Errorf("response mapping did not match any valid quota fields in upstream response")
 	}
 	return out, nil
+}
+
+func (h *Handler) denyClaudeAuxiliary(c *gin.Context, auth *coreauth.Auth) bool {
+	if h.cfg != nil && h.cfg.Claude.ProxyOnly && auth != nil && strings.EqualFold(auth.Provider, "claude") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Claude quota probes disabled in proxy-only mode"})
+		return true
+	}
+	return false
 }

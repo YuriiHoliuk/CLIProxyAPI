@@ -75,3 +75,29 @@ func TestApplyManagerConfigStopsReplacedServiceAffinitySelector(t *testing.T) {
 		t.Fatal("expected replaced selector to be stopped during routing config apply")
 	}
 }
+
+func TestBalancedRoutingSelectorAndAffinity(t *testing.T) {
+	for _, affinity := range []bool{false, true} {
+		state := normalizedRoutingRuntimeState(&internalconfig.Config{Routing: internalconfig.RoutingConfig{Strategy: "balanced", SessionAffinity: affinity}})
+		if state.strategy != "balanced" {
+			t.Fatalf("strategy=%s", state.strategy)
+		}
+		selector := newRoutingSelector(state)
+		if affinity {
+			if _, ok := selector.(*coreauth.SessionAffinitySelector); !ok {
+				t.Fatalf("missing affinity: %T", selector)
+			}
+		} else {
+			if _, ok := selector.(*coreauth.BalancedSelector); !ok {
+				t.Fatalf("wrong selector: %T", selector)
+			}
+		}
+		picked, err := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, []*coreauth.Auth{{ID: "low", Attributes: map[string]string{coreauth.AttributeWeight: "1"}}, {ID: "high", Attributes: map[string]string{coreauth.AttributeWeight: "4"}}})
+		if err != nil || picked.ID != "high" {
+			t.Fatalf("balanced ignored: %v %v", picked, err)
+		}
+		if stoppable, ok := selector.(interface{ Stop() }); ok {
+			stoppable.Stop()
+		}
+	}
+}

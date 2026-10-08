@@ -35,6 +35,10 @@ type codexOAuthService interface {
 }
 
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+	if h.cfg != nil && h.cfg.Claude.ProxyOnly {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Claude OAuth disabled in proxy-only mode; import setup-token locally"})
+		return
+	}
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 

@@ -195,11 +195,14 @@ type QuotaState struct {
 	// Cooldown transitions must use applyCooldownFields so they cannot replace
 	// this snapshot.
 	Signals map[string]string `json:"signals,omitempty"`
+	// BalanceWindows retains the newest passive observation per duration across partial responses.
+	BalanceWindows []BalanceWindow `json:"balance_windows,omitempty"`
 }
 
 // Clone returns an independent copy of the quota state.
 func (q QuotaState) Clone() QuotaState {
 	copyQuota := q
+	copyQuota.BalanceWindows = append([]BalanceWindow(nil), q.BalanceWindows...)
 	if len(q.Signals) > 0 {
 		copyQuota.Signals = make(map[string]string, len(q.Signals))
 		for key, value := range q.Signals {

@@ -621,6 +621,14 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 // unless session affinity or an across-priorities scheduler is active, in which case the selector
 // or scheduler additionally receives lower priority tiers.
 func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
+	if _, balanced := selector.(*BalancedSelector); balanced {
+		auths = positiveWeightAuths(auths)
+	}
+	if affinity, ok := selector.(*SessionAffinitySelector); ok {
+		if _, balanced := affinity.fallback.(*BalancedSelector); balanced {
+			auths = positiveWeightAuths(auths)
+		}
+	}
 	_, sessionAffinity := selector.(*SessionAffinitySelector)
 	schedulerAcross := m.pluginSchedulerWantsAcrossPrioritiesLocked()
 
