@@ -1033,7 +1033,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.UpdatedAt = now
 
 		if !result.SkipQuotaObservation {
-			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
+			if auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now) && auth.Metadata != nil {
+				// The existing credential store already saves metadata below. Keep
+				// bounded measured windows there so a restart needs no quota probe.
+				// Include older windows from metadata when a response is partial.
+				auth.Metadata["windows"] = AccountBalanceWindows(auth)
+			}
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			}
