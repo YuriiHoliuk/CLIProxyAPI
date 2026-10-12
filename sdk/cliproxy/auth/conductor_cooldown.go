@@ -1033,11 +1033,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.UpdatedAt = now
 
 		if !result.SkipQuotaObservation {
-			if auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now) && auth.Metadata != nil {
-				// The existing credential store already saves metadata below. Keep
-				// bounded measured windows there so a restart needs no quota probe.
-				// Include older windows from metadata when a response is partial.
-				auth.Metadata["windows"] = AccountBalanceWindows(auth)
+			if auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now) {
+				// One journal line per observation lets quota spend be attributed
+				// to sessions afterwards; the proxy keeps no observation history.
+				selectorLogEntry(ctx).Infof("quota observation | auth=%s provider=%s model=%s session=%s windows=%s", auth.ID, result.Provider, result.Model, quotaObservationSessionID(result.Options), formatQuotaWindows(auth.Quota.BalanceWindows))
+				if auth.Metadata != nil {
+					// The existing credential store already saves metadata below. Keep
+					// bounded measured windows there so a restart needs no quota probe.
+					// Include older windows from metadata when a response is partial.
+					auth.Metadata["windows"] = AccountBalanceWindows(auth)
+				}
 			}
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
