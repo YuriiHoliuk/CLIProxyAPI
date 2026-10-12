@@ -1,10 +1,15 @@
 package auth
 
 import (
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 )
 
 const (
@@ -226,4 +231,32 @@ func mergeQuotaObservation(target, source QuotaState) QuotaState {
 	target.ObservedAt = source.ObservedAt
 	target.Signals = source.Clone().Signals
 	return target
+}
+
+// formatQuotaWindows renders observed windows as "5h=24%@<reset>,7d=29%@<reset>".
+func formatQuotaWindows(windows []BalanceWindow) string {
+	if len(windows) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(windows))
+	for _, w := range windows {
+		part := w.Name + "=" + strconv.FormatFloat(math.Round(w.UsedPercent*100)/100, 'f', -1, 64) + "%"
+		if !w.ResetsAt.IsZero() {
+			part += "@" + w.ResetsAt.UTC().Format(time.RFC3339)
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ",")
+}
+
+// quotaObservationSessionID returns the full session identity of a result. The
+// full value is logged so it can be matched to client transcripts.
+func quotaObservationSessionID(opts cliproxyexecutor.Options) string {
+	if id, ok := opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string); ok && strings.TrimSpace(id) != "" {
+		return id
+	}
+	if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, opts.OriginalRequest, nil); ok && info.ClientType != "lcp" && info.SessionID != "" {
+		return cliproxysession.BoundSessionIdentity(info.SessionID)
+	}
+	return "-"
 }

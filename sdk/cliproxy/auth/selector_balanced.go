@@ -91,7 +91,10 @@ func AccountBalance(a *Auth, now time.Time, maxWeight int64, busy int) BalanceDe
 		}
 	}
 	share := float64(d.Weight) / float64(busy+1)
-	d.ShortScore = balanceWindowScore(short, now, 5, 1, 1, share, float64(maxWeight))
+	// The short score is per-weight health (1 = nominal 5h pace for one session).
+	// Weight already scales the long score; scaling here too halved every
+	// weight-1 account's score even with an idle 5h window.
+	d.ShortScore = balanceWindowScore(short, now, 5, 1, 1, 1/float64(busy+1), 1)
 	d.LongScore = balanceWindowScore(long, now, 168, 5, 24, share, float64(maxWeight))
 	d.Score = d.LongScore * math.Min(d.ShortScore/0.5, 1)
 	return d

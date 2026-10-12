@@ -233,3 +233,55 @@ func TestClaudeProxyOnlySkipsBackgroundRefresh(t *testing.T) {
 		t.Fatal("Claude proxy-only scheduled a background refresh")
 	}
 }
+
+func TestBalancedShortWindowDoesNotRepeatWeight(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	withFiveHour := func(a *Auth, used float64, reset time.Time) *Auth {
+		a.Quota.Signals["Anthropic-Ratelimit-Unified-5h-Utilization"] = fmt.Sprint(used / 100)
+		a.Quota.Signals["Anthropic-Ratelimit-Unified-5h-Reset"] = fmt.Sprint(reset.Unix())
+		return a
+	}
+	selector := &BalancedSelector{Now: func() time.Time { return now }}
+	// The 5x account has 1.5x the weight-adjusted 7d urgency and an idle 5h window.
+	big := withFiveHour(balanceAuth("20x", 4, 50, now.Add(100*time.Hour), now), 0, now.Add(5*time.Hour))
+	small := withFiveHour(balanceAuth("5x", 1, 10, now.Add(30*time.Hour), now), 0, now.Add(5*time.Hour))
+	picked, err := selector.Pick(context.Background(), "claude", "", cliproxyexecutor.Options{}, []*Auth{big, small})
+	if err != nil || picked.ID != "5x" {
+		t.Fatalf("idle 5h window penalized the lower-weight account: %v %v", picked, err)
+	}
+	// A nearly exhausted 5h window still throttles the urgent account.
+	small = withFiveHour(small, 90, now.Add(4*time.Hour))
+	picked, err = selector.Pick(context.Background(), "claude", "", cliproxyexecutor.Options{}, []*Auth{big, small})
+	if err != nil || picked.ID != "20x" {
+		t.Fatalf("exhausted 5h window did not throttle: %v %v", picked, err)
+	}
+}
+
+func TestQuotaObservationLogFields(t *testing.T) {
+	reset := time.Date(2026, 10, 17, 2, 0, 0, 0, time.UTC)
+	got := formatQuotaWindows([]BalanceWindow{{Name: "5h", UsedPercent: 24}, {Name: "7d", UsedPercent: 28.999999999999996, ResetsAt: reset}})
+	if got != "5h=24%,7d=29%@2026-10-17T02:00:00Z" {
+		t.Fatalf("windows: %q", got)
+	}
+	if got := formatQuotaWindows(nil); got != "-" {
+		t.Fatalf("empty windows: %q", got)
+	}
+	canonical := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: "claude:b0ef09ca-7f29-4716-90e0-c738737aeac5"}}
+	if got := quotaObservationSessionID(canonical); got != "claude:b0ef09ca-7f29-4716-90e0-c738737aeac5" {
+		t.Fatalf("canonical session: %q", got)
+	}
+	if got := quotaObservationSessionID(cliproxyexecutor.Options{}); got != "-" {
+		t.Fatalf("missing session: %q", got)
+	}
+}
+
+func TestTruncateSessionIDKeepsSessionsDistinct(t *testing.T) {
+	a := truncateSessionID("codex:01a131cc-a72e-7143-b17f-9ba8d6d3d712")
+	b := truncateSessionID("codex:01a131cc-d880-73c1-a42d-8012be917465")
+	if a == b || a != "codex:01a131cc...d712" {
+		t.Fatalf("truncated IDs: %q %q", a, b)
+	}
+	if got := truncateSessionID("short-session"); got != "short-session" {
+		t.Fatalf("short ID: %q", got)
+	}
+}

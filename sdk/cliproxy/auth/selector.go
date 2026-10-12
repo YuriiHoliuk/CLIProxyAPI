@@ -1322,12 +1322,21 @@ func selectorLogEntry(ctx context.Context) *log.Entry {
 	return log.NewEntry(log.StandardLogger())
 }
 
-// truncateSessionID shortens session ID for logging (first 8 chars + "...")
+// truncateSessionID shortens session ID for logging. It keeps the namespace
+// prefix (e.g. "claude:"), the first 8 and the last 4 chars of the ID: UUIDv7
+// session IDs started within the same minute share their first 8 chars.
 func truncateSessionID(id string) string {
 	if len(id) <= 20 {
 		return id
 	}
-	return id[:8] + "..."
+	keep := 8
+	if colon := strings.Index(id, ":"); colon >= 0 && colon < 16 {
+		keep = colon + 1 + 8
+	}
+	if keep+4+3 >= len(id) {
+		return id
+	}
+	return id[:keep] + "..." + id[len(id)-4:]
 }
 
 // Stop releases resources held by the selector.
