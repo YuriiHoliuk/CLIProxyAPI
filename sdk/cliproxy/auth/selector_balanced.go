@@ -137,6 +137,11 @@ func AccountBalanceWindows(a *Auth) []BalanceWindow {
 		}
 		old, ok := windows[w.WindowSeconds]
 		if !ok || w.ObservedAt.After(old.ObservedAt) {
+			// A partial response can refresh utilization without repeating reset.
+			// Retain the deadline only within the same still-open window.
+			if ok && w.ResetsAt.IsZero() && old.ResetsAt.After(w.ObservedAt) {
+				w.ResetsAt = old.ResetsAt
+			}
 			windows[w.WindowSeconds] = w
 		}
 	}

@@ -173,7 +173,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 				return resp, nil
 			}
 		}
-		return cliproxyexecutor.Response{}, lastErr
+		return cliproxyexecutor.Response{}, m.withClaudePoolRecovery(ctx, retryModel, opts, lastErr)
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
@@ -225,7 +225,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 			}
 		}
 		lastErr = preferredExecutionAttemptError(lastErr, preferredUpstreamErr)
-		return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(lastErr)
+		return cliproxyexecutor.Response{}, m.withClaudePoolRecovery(ctx, retryModel, opts, unwrapExecutionBoundaryError(lastErr))
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
@@ -314,7 +314,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
 			return streamErrorResult(bootstrapErr.Headers(), lastErr), nil
 		}
-		return nil, lastErr
+		return nil, m.withClaudePoolRecovery(ctx, retryModel, opts, lastErr)
 	}
 	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 }

@@ -285,3 +285,17 @@ func TestTruncateSessionIDKeepsSessionsDistinct(t *testing.T) {
 		t.Fatalf("short ID: %q", got)
 	}
 }
+
+func TestAccountBalanceWindowsRetainsResetOnPartialResponse(t *testing.T) {
+	now := time.Date(2026, 10, 13, 14, 0, 0, 0, time.UTC)
+	a := &Auth{Quota: QuotaState{ObservedAt: now, Signals: map[string]string{"Anthropic-Ratelimit-Unified-5h-Utilization": "0.97"}, BalanceWindows: []BalanceWindow{{Name: "5h", WindowSeconds: 18000, UsedPercent: 96, ObservedAt: now.Add(-time.Minute), ResetsAt: now.Add(time.Hour)}}}}
+	got := AccountBalanceWindows(a)
+	if len(got) != 1 || got[0].UsedPercent != 97 || !got[0].ResetsAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("partial window = %+v", got)
+	}
+	a.Quota.BalanceWindows[0].ResetsAt = now.Add(-time.Second)
+	got = AccountBalanceWindows(a)
+	if !got[0].ResetsAt.IsZero() {
+		t.Fatal("expired reset carried into new window")
+	}
+}
