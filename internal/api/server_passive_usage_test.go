@@ -29,5 +29,8 @@ func TestPassiveUsageDashboardNoCredentialsAndNoAuthWhenUnconfigured(t *testing.
 		if path == "/usage" && !strings.Contains(response.Body.String(), `"used_percent":25`) {
 			t.Fatalf("normalized quota missing: %s", response.Body)
 		}
+		if path == "/dashboard" && !strings.Contains(response.Body.String(), `data-tab="5h"`) {
+			t.Fatal("dashboard page is missing its 5-hour tab")
+		}
 	}
 }
