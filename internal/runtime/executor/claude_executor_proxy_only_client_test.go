@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,8 +45,11 @@ func TestClaudeProxyOnlyRejectsNonClaudeCodeClients(t *testing.T) {
 			headers.Set("User-Agent", tc.agent)
 		}
 		opts := cliproxyexecutor.Options{SourceFormat: tc.format, Headers: headers}
-		if _, err := e.Execute(context.Background(), a, request, opts); err == nil {
+		_, err := e.Execute(context.Background(), a, request, opts)
+		if err == nil {
 			t.Errorf("%s: request accepted", tc.name)
+		} else if scoped, ok := errors.AsType[cliproxyexecutor.RequestScopedError](err); !ok || !scoped.IsRequestScoped() {
+			t.Errorf("%s: rejection would cool down the credential: %v", tc.name, err)
 		}
 		if _, err := e.ExecuteStream(context.Background(), a, request, opts); err == nil {
 			t.Errorf("%s: stream accepted", tc.name)

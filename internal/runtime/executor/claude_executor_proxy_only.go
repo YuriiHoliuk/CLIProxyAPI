@@ -18,16 +18,26 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// claudeProxyOnlyClientError rejects the caller, not the credential, so it must
+// neither rotate to another credential nor put the selected one into cooldown.
+type claudeProxyOnlyClientError struct {
+	statusErr
+}
+
+func (claudeProxyOnlyClientError) IsRequestScoped() bool {
+	return true
+}
+
 // prepareProxyOnlyClaudeRequest preserves the native business payload and headers.
 // Only credential/machine identity, resolved model, explicit payload rules and CCH change.
 func (e *ClaudeExecutor) prepareProxyOnlyClaudeRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, count bool) (*http.Request, []byte, error) {
 	if opts.SourceFormat != sdktranslator.FormatClaude {
-		return nil, nil, statusErr{code: 400, msg: "Claude proxy-only requires native Claude Code/Agent SDK requests"}
+		return nil, nil, claudeProxyOnlyClientError{statusErr{code: 400, msg: "Claude proxy-only requires native Claude Code/Agent SDK requests"}}
 	}
 	// Subscription credentials stay inside Anthropic's harness: reject Messages
 	// requests from any client that is not Claude Code or its Agent SDK.
 	if !helps.IsClaudeCodeUserAgent(opts.Headers.Get("User-Agent")) {
-		return nil, nil, statusErr{code: 403, msg: "Claude proxy-only serves Claude Code/Agent SDK clients only"}
+		return nil, nil, claudeProxyOnlyClientError{statusErr{code: 403, msg: "Claude proxy-only serves Claude Code/Agent SDK clients only"}}
 	}
 	token, base := claudeCreds(auth)
 	if base == "" {
