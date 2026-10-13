@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -147,7 +148,14 @@ func (e *ClaudeExecutor) proxyOnlyClaudeHTTP(ctx context.Context, auth *cliproxy
 		if readErr != nil {
 			return nil, nil, reporter, readErr
 		}
-		return nil, nil, reporter, classifyClaudeUpstreamErrorWithCooling(response.StatusCode, response.Header, data, e.modelLevelCooling())
+		upstreamErr := classifyClaudeUpstreamErrorWithCooling(response.StatusCode, response.Header, data, e.modelLevelCooling())
+		if limited, ok := upstreamErr.(claudeRateLimitError); ok {
+			retry, recovery := helps.ClaudeQuotaRecovery(response.Header, auth, time.Now())
+			limited.retryAfter = &retry
+			limited.recoveryHeaders = recovery
+			upstreamErr = limited
+		}
+		return nil, nil, reporter, upstreamErr
 	}
 	return response, decoded, reporter, nil
 }

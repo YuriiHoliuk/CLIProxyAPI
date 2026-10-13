@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -331,6 +332,7 @@ type claudeErrorDetail struct {
 	Type    string              `json:"type"`
 	Message string              `json:"message"`
 	Details *claudeErrorDetails `json:"details,omitempty"`
+	ResetAt string              `json:"reset_at,omitempty"`
 }
 
 type claudeErrorDetails struct {
@@ -366,6 +368,9 @@ func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claud
 	}
 	if clienterror.IsClaudeThreadNotFound(status, errors.New(errText)) {
 		response.Error.Details = &claudeErrorDetails{ErrorCode: "thread_not_found"}
+	}
+	if reset, err := strconv.ParseInt(claudeQuotaRecoveryHeaders(msg, time.Now()).Get("Anthropic-Ratelimit-Unified-Reset"), 10, 64); err == nil {
+		response.Error.ResetAt = time.Unix(reset, 0).UTC().Format(time.RFC3339)
 	}
 	return response
 }
@@ -419,6 +424,9 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 		}
 	}
 
+	for key, values := range claudeQuotaRecoveryHeaders(msg, time.Now()) {
+		c.Writer.Header()[key] = values
+	}
 	body, err := json.Marshal(h.toClaudeError(msg))
 	if err != nil {
 		body = []byte(`{"type":"error","error":{"type":"api_error","message":"Internal Server Error"}}`)

@@ -671,6 +671,11 @@ func (claudeEntitlementError) IsCredentialScoped() bool {
 type claudeRateLimitError struct {
 	statusErr
 	credentialScoped bool
+	recoveryHeaders  http.Header
+}
+
+func (e claudeRateLimitError) ClaudeQuotaRecoveryHeaders() http.Header {
+	return e.recoveryHeaders.Clone()
 }
 
 func (e claudeRateLimitError) IsCredentialScoped() bool {
