@@ -24,6 +24,11 @@ func (e *ClaudeExecutor) prepareProxyOnlyClaudeRequest(ctx context.Context, auth
 	if opts.SourceFormat != sdktranslator.FormatClaude {
 		return nil, nil, statusErr{code: 400, msg: "Claude proxy-only requires native Claude Code/Agent SDK requests"}
 	}
+	// Subscription credentials stay inside Anthropic's harness: reject Messages
+	// requests from any client that is not Claude Code or its Agent SDK.
+	if !helps.IsClaudeCodeUserAgent(opts.Headers.Get("User-Agent")) {
+		return nil, nil, statusErr{code: 403, msg: "Claude proxy-only serves Claude Code/Agent SDK clients only"}
+	}
 	token, base := claudeCreds(auth)
 	if base == "" {
 		base = "https://api.anthropic.com"

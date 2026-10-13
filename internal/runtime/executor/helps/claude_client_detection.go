@@ -496,6 +496,12 @@ func claudeJSONObjectHasKeys(raw []byte, want []string) bool {
 	return errClosing == nil && closing == json.Delim('}') && keyIndex == len(want)
 }
 
+// IsClaudeCodeUserAgent reports whether userAgent has the shape Claude Code and
+// its Agent SDK send, for example "claude-cli/2.1.280 (external, sdk-ts, agent-sdk/0.2.1)".
+func IsClaudeCodeUserAgent(userAgent string) bool {
+	return claudeCodeNativeUserAgentPattern.MatchString(strings.TrimSpace(userAgent))
+}
+
 func plausibleClaudeCodeUserAgent(userAgent string, cfg *config.Config) bool {
 	userAgent = strings.TrimSpace(userAgent)
 	if !claudeCodeUserAgentPattern.MatchString(userAgent) || !claudeCodeNativeUserAgentPattern.MatchString(userAgent) {
