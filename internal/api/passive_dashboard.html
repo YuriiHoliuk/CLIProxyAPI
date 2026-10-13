@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Proxy usage</title>
+<style>
+:root{
+  --bg:#0d1117;--panel:#131922;--panel2:#18202b;--line:#253041;--grid:#1c2532;
+  --text:#e6ebf2;--muted:#8e9aab;--faint:#5d6a7c;
+  --track:#1f2a38;--ok:#4cc38a;--warn:#f0b354;--bad:#ef6b6b;--now:#7cc4ff;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:light){:root{
+  --bg:#f5f6f8;--panel:#fff;--panel2:#fafbfc;--line:#e1e5eb;--grid:#eef1f5;
+  --text:#18202b;--muted:#5d6878;--faint:#9aa3b0;
+  --track:#e8ecf1;--ok:#1f9d63;--warn:#c98612;--bad:#d14343;--now:#2f7fd1;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 var(--sans)}
+.wrap{max-width:1180px;margin:0 auto;padding:36px 22px 60px}
+header{display:flex;flex-wrap:wrap;gap:16px 24px;align-items:end;justify-content:space-between;margin-bottom:22px}
+h1{margin:0;font-size:26px;letter-spacing:-.01em;font-weight:650}
+.sub{color:var(--muted);font:12px/1.5 var(--mono);margin-top:4px}
+.tabs{display:inline-flex;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.tabs button{border:0;background:none;color:var(--muted);font:600 13px var(--sans);padding:7px 16px;border-radius:6px;cursor:pointer}
+.tabs button[aria-selected=true]{background:var(--panel2);color:var(--text);box-shadow:0 0 0 1px var(--line)}
+.tabs button:focus-visible{outline:2px solid var(--now);outline-offset:1px}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 18px 10px}
+.chart{--label:180px;--stats:230px;position:relative}
+.axis,.row{display:grid;grid-template-columns:var(--label) 1fr var(--stats);gap:0 16px;align-items:center}
+.axis{height:34px;align-items:end}
+.lane{position:relative;height:100%}
+.ticks{position:absolute;inset:0}
+.tick{position:absolute;bottom:6px;transform:translateX(4px);font:11px var(--mono);color:var(--faint);white-space:nowrap}
+.tick b{color:var(--muted);font-weight:600}
+.body{position:relative}
+.gridlayer{position:absolute;top:0;bottom:0;pointer-events:none}
+.band{position:absolute;top:0;bottom:0;background:var(--grid)}
+.gline{position:absolute;top:0;bottom:0;width:1px;background:var(--line);opacity:.55}
+.nowline{position:absolute;top:-9px;bottom:-9px;width:2px;margin-left:-1px;background:var(--now);z-index:3;pointer-events:none}
+.axis .nowline{top:2px;bottom:-1px}
+.nowline span{position:absolute;top:-2px;left:6px;font:600 11px var(--mono);color:var(--now);white-space:nowrap;background:var(--panel);padding:0 3px}
+.row{min-height:84px;padding:8px 0;border-top:1px solid var(--line)}
+.row .lane{height:68px}
+.who .name{font-weight:600;font-size:15px}
+.who .meta{color:var(--faint);font:11.5px/1.5 var(--mono)}
+.badge{display:inline-block;padding:0 6px;border-radius:4px;border:1px solid var(--line);color:var(--muted);font:10.5px/1.6 var(--mono);margin-right:4px}
+.badge.alert{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,var(--line))}
+.bar{position:absolute;top:50%;height:24px;margin-top:-16px;border-radius:6px;background:var(--track);overflow:hidden;z-index:1;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 6%,transparent)}
+.fill{position:absolute;left:0;top:0;bottom:0;border-radius:6px 0 0 6px;background:var(--c)}
+.fill[style*="width: 100%"],.fill.full{border-radius:6px}
+.bar .pct{position:absolute;top:0;bottom:0;display:flex;align-items:center;padding:0 8px;font:600 12px var(--mono);color:var(--text);white-space:nowrap}
+.bar.stale{opacity:.45;background:repeating-linear-gradient(135deg,var(--track) 0 6px,transparent 6px 12px)}
+.ends{position:absolute;top:50%;margin-top:12px;font:10.5px var(--mono);color:var(--faint);white-space:nowrap;z-index:1}
+.ends.r{transform:translateX(-100%)}
+.stats{text-align:right}
+.left{font:650 22px/1.1 var(--sans);letter-spacing:-.01em}
+.left small{font:500 12px var(--sans);color:var(--muted);letter-spacing:0;margin-left:3px}
+.detail{color:var(--muted);font:11.5px/1.5 var(--mono)}
+.pace{font:600 11.5px/1.5 var(--mono)}
+.empty{padding:28px 0;color:var(--muted);text-align:center}
+.legend{display:flex;flex-wrap:wrap;gap:8px 22px;margin:14px 2px 0;color:var(--muted);font-size:12.5px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:6px;background:var(--c)}
+.legend .nl{width:2px;height:14px;border-radius:0;background:var(--now)}
+details{margin-top:18px;color:var(--muted);font-size:13px}
+details input,details button{padding:7px 10px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;font:inherit}
+#error{color:var(--bad);font:12px var(--mono);min-height:1em;margin:8px 0 0}
+
+@media (max-width:760px){
+  .wrap{padding:22px 12px 40px}
+  .card{padding:12px 12px 6px}
+  .axis,.row{grid-template-columns:1fr;gap:0}
+  .axis .who,.axis .stats{display:none}
+  .row{height:auto;padding:10px 0 4px}
+  .row .who{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .row .lane{height:52px}
+  .row .stats{display:flex;justify-content:space-between;align-items:baseline;gap:10px;text-align:left}
+  .left{font-size:18px}
+  .gridlayer{display:none}
+}
+@media (prefers-reduced-motion:no-preference){.fill{transition:width .4s ease}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Proxy usage</h1>
+      <div class="sub" id="state">Loading…</div>
+    </div>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-week" data-tab="week">Week</button>
+      <button role="tab" id="tab-5h" data-tab="5h">5 hours</button>
+    </div>
+  </header>
+
+  <div class="card"><div class="chart" id="chart"></div></div>
+
+  <div class="legend">
+    <span><i class="nl"></i>now: a bar's even-pace point</span>
+    <span><i style="--c:var(--ok)"></i>used, behind pace</span>
+    <span><i style="--c:var(--warn)"></i>used, ahead of pace</span>
+    <span><i style="--c:var(--bad)"></i>exhausted</span>
+    <span><i style="--c:var(--track)"></i>left until reset</span>
+  </div>
+  <p id="error"></p>
+
+  <details><summary>API key (only when configured on this server)</summary>
+    <input id="key" type="password" autocomplete="off"> <button id="save">Apply</button>
+  </details>
+</div>
+<script>
+// Each quota window is a bar from (resets_at - window) to resets_at on one shared
+// time axis. The fill is the used share of the window, drawn from the window start.
+// Because the bar spans the whole window, the "now" line is exactly where an
+// even burn would be: a fill that crosses it is spending faster than the window
+// refills. Data comes from /usage (local snapshots only, no provider calls).
+const HOUR=3600e3,DAY=24*HOUR;
+const chart=document.getElementById('chart'),state=document.getElementById('state'),error=document.getElementById('error');
+let key=sessionStorage.getItem('proxy-key')||'',data=null,tab=location.hash==='#5h'?'5h':'week';
+document.getElementById('key').value=key;
+document.getElementById('save').onclick=()=>{key=document.getElementById('key').value;sessionStorage.setItem('proxy-key',key);refresh()};
+for(const b of document.querySelectorAll('.tabs button'))b.onclick=()=>{tab=b.dataset.tab;history.replaceState(null,'','#'+tab);render()};
+
+const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e};
+const fmtDur=ms=>{ms=Math.max(0,ms);const d=Math.floor(ms/DAY),h=Math.floor(ms%DAY/HOUR),m=Math.floor(ms%HOUR/60e3);return d?d+'d '+h+'h':h?h+'h '+String(m).padStart(2,'0')+'m':m+'m'};
+const day=t=>new Date(t).toLocaleDateString([], {weekday:'short'});
+const clock=t=>new Date(t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+const when=(t,week)=>week?day(t)+' '+clock(t):clock(t);
+const isWeek=w=>w.window_seconds>DAY/1000;
+
+function windowsFor(accounts,week){
+  const out=[];
+  for(const a of accounts)for(const w of a.balance.windows||[]){
+    if(!w.window_seconds||!w.resets_at||isWeek(w)!==week)continue;
+    const end=Date.parse(w.resets_at),len=w.window_seconds*1000;
+    out.push({a,w,start:end-len,end,len});
+  }
+  return out.sort((x,y)=>x.end-y.end);
+}
+
+function render(){
+  for(const b of document.querySelectorAll('.tabs button'))b.setAttribute('aria-selected',b.dataset.tab===tab);
+  chart.replaceChildren();
+  if(!data)return;
+  const week=tab==='week',now=Date.now(),rows=windowsFor(data.accounts,week);
+  if(!rows.length){chart.append(el('div','empty','No '+(week?'weekly':'5-hour')+' window observed yet.'));return}
+
+  // Domain: every bar plus "now", snapped to whole days (week) or hours (5h).
+  const unit=week?DAY:HOUR;
+  let lo=Math.min(now,...rows.map(r=>r.start)),hi=Math.max(now,...rows.map(r=>r.end));
+  const snap=(t,up)=>{const d=new Date(t);if(week){d.setHours(0,0,0,0);if(up&&+d<t)d.setDate(d.getDate()+1)}else{d.setMinutes(0,0,0);if(up&&+d<t)d.setHours(d.getHours()+1)}return +d};
+  lo=snap(lo,false);hi=snap(hi,true);
+  const x=t=>(t-lo)/(hi-lo)*100;
+
+  // Axis labels and the background grid (days alternate shading; hours get lines).
+  const axis=el('div','axis'),ticks=el('div','ticks'),lane=el('div','lane');
+  axis.append(el('div','who'),lane,el('div','stats'));lane.append(ticks);
+  const body=el('div','body'),grid=el('div','gridlayer');
+  const steps=[];for(let t=lo;t<hi;){const d=new Date(t);week?d.setDate(d.getDate()+1):d.setHours(d.getHours()+1);steps.push([t,+d]);t=+d}
+  chart.append(axis,body);
+  const fit=Math.max(2,Math.floor(lane.getBoundingClientRect().width/(week?54:46)));
+  const every=Math.ceil(steps.length/fit);
+  steps.forEach(([a,b],i)=>{
+    if(week&&i%2===0){const band=el('div','band');band.style.left=x(a)+'%';band.style.width=(x(b)-x(a))+'%';grid.append(band)}
+    const g=el('div','gline');g.style.left=x(a)+'%';grid.append(g);
+    if(i%every===0){const t=el('div','tick');t.style.left=x(a)+'%';
+      if(week){const d=new Date(a);t.append(el('b',null,d.toLocaleDateString([], {weekday:'short'})),' '+d.getDate())}else t.textContent=clock(a);
+      ticks.append(t)}
+  });
+  const marker=label=>{const m=el('div','nowline');m.style.left=x(now)+'%';if(label)m.append(el('span',null,'now '+clock(now)));return m};
+  lane.append(marker(true));
+
+  for(const r of rows){
+    const {a,w}=r,used=Math.min(100,Math.max(0,w.used_percent)),stale=r.end<=now;
+    const elapsed=Math.min(1,Math.max(0,(now-r.start)/r.len))*100,ahead=used-elapsed;
+    const color=used>=100?'var(--bad)':ahead>0?'var(--warn)':'var(--ok)';
+    const row=el('div','row'),who=el('div','who'),ln=el('div','lane'),st=el('div','stats');
+
+    const name=el('div','name',a.label||a.id),meta=el('div','meta');
+    meta.append(el('span','badge',a.provider));
+    if(a.balance.weight>1)meta.append(el('span','badge','×'+a.balance.weight));
+    if(a.disabled)meta.append(el('span','badge alert','disabled'));else if(a.unavailable)meta.append(el('span','badge alert','cooldown'));
+    if(a.balance.busy)meta.append(a.balance.busy+' active');
+    who.append(name,meta);
+
+    const bar=el('div','bar'+(stale?' stale':''));bar.style.left=x(r.start)+'%';bar.style.width=(x(r.end)-x(r.start))+'%';
+    bar.title=(a.label||a.id)+' · '+w.name+' · '+used.toFixed(1)+'% used · window '+when(r.start,week)+' → '+when(r.end,week)+' · reported '+new Date(w.observed_at).toLocaleString();
+    if(!stale){
+      const f=el('div','fill'+(used>=100?' full':''));f.style.setProperty('--c',color);f.style.width=used+'%';bar.append(f);
+      const p=el('div','pct',Math.round(used)+'%');
+      if(used>=18){p.style.left=0;p.style.width=used+'%';p.style.justifyContent='flex-end';p.style.color='#0d1117'}else p.style.left=used+'%';
+      bar.append(p);
+    }else bar.append(el('div','pct','reset · not observed since'));
+    const e1=el('div','ends',when(r.start,week)),e2=el('div','ends r',when(r.end,week));
+    e1.style.left=x(r.start)+'%';e2.style.left=x(r.end)+'%';
+    ln.append(bar,e1,e2,marker(false));
+
+    if(stale){
+      st.append(el('div','left','100%'),el('div','detail','presumed fresh; reset '+clock(r.end)));
+    }else{
+      const left=100-used,remain=r.end-now,per=week?remain/DAY:remain/HOUR;
+      const big=el('div','left',Math.round(left)+'%');big.append(el('small',null,'left'));
+      const rate=per>0&&left>0?' · ≈'+(left/Math.max(per,week?1/24:1/60)).toFixed(left/per<10?1:0)+'% per '+(week?'day':'hour'):'';
+      const pace=el('div','pace',used>=100?'exhausted until '+when(r.end,week):ahead>0?Math.round(ahead)+'% ahead of pace':Math.round(-ahead)+'% spare vs pace');
+      pace.style.color=color;
+      const d=el('div','detail','resets in '+fmtDur(remain)+rate);
+      const info=el('div');info.append(d,pace);st.append(big,info);
+    }
+    row.append(who,ln,st);body.append(row);
+  }
+
+  // The grid sits behind the lane column, so it lines up with the bars.
+  const ref=body.querySelector('.lane'),bx=body.getBoundingClientRect(),lx=ref.getBoundingClientRect();
+  grid.style.left=(lx.left-bx.left)+'px';grid.style.width=lx.width+'px';body.prepend(grid);
+}
+let resizing;window.addEventListener('resize',()=>{clearTimeout(resizing);resizing=setTimeout(render,120)});
+
+async function refresh(){
+  try{
+    const r=await fetch('/usage',{headers:key?{Authorization:'Bearer '+key}:{}});
+    if(!r.ok)throw Error('Usage API returned '+r.status);
+    data=await r.json();
+    data.accounts.sort((a,b)=>(a.provider+' '+(a.label||a.id)).localeCompare(b.provider+' '+(b.label||b.id)));
+    state.textContent=data.strategy+' · session affinity '+(data.session_affinity?'on':'off')+' · updated '+clock(Date.parse(data.observed_at));
+    error.textContent='';render();
+  }catch(e){error.textContent=e.message}
+}
+refresh();setInterval(refresh,15000);
+</script>
+</body>
+</html>
