@@ -140,7 +140,7 @@ function windowsFor(accounts,week){
     const end=Date.parse(w.resets_at),len=w.window_seconds*1000;
     out.push({a,w,start:end-len,end,len});
   }
-  return out.sort((x,y)=>x.end-y.end);
+  return out;
 }
 
 function render(){
