@@ -493,7 +493,6 @@ func TestSessionAffinityOneHourSlidingTTL(t *testing.T) {
 	affinity := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: balanced, TTL: time.Hour})
 	defer affinity.Stop()
 	affinity.cache.now = clock
-	affinity.sessions.now = clock
 	a := balanceAuth("a", 4, 10, now.Add(100*time.Hour), now)
 	b := balanceAuth("b", 4, 50, now.Add(100*time.Hour), now)
 	opts := func(session string) cliproxyexecutor.Options {
@@ -533,8 +532,7 @@ func TestSessionAffinityOneHourSlidingTTL(t *testing.T) {
 }
 
 // Spillover only routes sessions without a live binding: a bound session keeps
-// its account (and prompt cache) while that account spills, and so do its
-// side requests on other models and its subagents.
+// its account (and prompt cache) while that account spills.
 func TestBalancedSpilloverNeverMovesBoundSession(t *testing.T) {
 	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
 	balanced := &BalancedSelector{Now: func() time.Time { return now }}
@@ -575,18 +573,6 @@ func TestBalancedSpilloverNeverMovesBoundSession(t *testing.T) {
 			t.Fatalf("bound session moved by spillover: %s", got)
 		}
 	}
-	// A Haiku side request in the bound session stays on the session's account.
-	if got := pick("claude-haiku-4-5", root); got != "20x" {
-		t.Fatalf("side request spilled: %s", got)
-	}
-	// Subagents inherit the parent's account even on another model.
-	sub := headers("X-Claude-Code-Session-Id", "root", "X-Claude-Code-Agent-Id", "explore-1")
-	if got := pick("claude-haiku-4-5", sub); got != "20x" {
-		t.Fatalf("subagent spilled: %s", got)
-	}
-	if got := pick("claude-sonnet-4-6", sub); got != "20x" {
-		t.Fatalf("subagent model switch spilled: %s", got)
-	}
 	// Only real unavailability (a 429 cooldown) moves the bound session.
 	// Availability is checked against the wall clock.
 	recover := time.Now().Add(time.Hour)
@@ -596,5 +582,60 @@ func TestBalancedSpilloverNeverMovesBoundSession(t *testing.T) {
 	big.Quota = QuotaState{Exceeded: true, NextRecoverAt: recover}
 	if got := pick("claude-opus-4-8", root); got != "5x" {
 		t.Fatalf("unavailable account kept: %s", got)
+	}
+}
+
+// With subagent affinity off (the Jetson setting), a plain subagent and a
+// request on another model are routed freely and then keep their own binding;
+// a Claude Code fork, which resends the parent's prefix, inherits the parent.
+func TestBalancedFreeSubagentsAndInheritedForks(t *testing.T) {
+	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
+	balanced := &BalancedSelector{Now: func() time.Time { return now }}
+	off := false
+	affinity := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: balanced, TTL: time.Hour, SubagentAffinity: &off})
+	defer affinity.Stop()
+	big := balanceAuth("20x", 4, 37, now.Add(14*time.Hour), now)
+	small := balanceAuth("5x", 1, 2, now.Add(150*time.Hour), now)
+	auths := []*Auth{big, small}
+	request := func(agent, body string) cliproxyexecutor.Options {
+		h := http.Header{"X-Claude-Code-Session-Id": []string{"root"}}
+		if agent != "" {
+			h.Set("X-Claude-Code-Agent-Id", agent)
+		}
+		return cliproxyexecutor.Options{Headers: h, OriginalRequest: []byte(body), Metadata: map[string]any{}}
+	}
+	pick := func(model string, opts cliproxyexecutor.Options) string {
+		t.Helper()
+		picked, err := affinity.Pick(context.Background(), "claude", model, opts, auths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return picked.ID
+	}
+	plain := `{"messages":[{"role":"user","content":"Find the config loader"}]}`
+	fork := `{"messages":[{"role":"user","content":"parent turn"},{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Agent","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"Fork started \u2014 processing in background"}]},{"type":"text","text":"<fork-boilerplate>\nYou are a worker fork. The transcript above is the parent's history.\n</fork-boilerplate>\nYour directive: check tests"}]}]}`
+	if got := pick("claude-opus-5-5", request("", plain)); got != "20x" {
+		t.Fatalf("parent: %s", got)
+	}
+	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 25, 30: 42})
+	if got := pick("claude-opus-5-5", request("explore-1", plain)); got != "5x" {
+		t.Fatalf("plain subagent inherited the spilling parent account: %s", got)
+	}
+	if got := pick("claude-haiku-4-5", request("", plain)); got != "5x" {
+		t.Fatalf("other-model request inherited the spilling session account: %s", got)
+	}
+	if got := pick("claude-opus-5-5", request("fork-1", fork)); got != "20x" {
+		t.Fatalf("fork did not inherit the parent account: %s", got)
+	}
+	// Each keeps its own binding once the ranking flips back.
+	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 58, 30: 59})
+	if got := pick("claude-opus-5-5", request("explore-1", plain)); got != "5x" {
+		t.Fatalf("subagent binding lost: %s", got)
+	}
+	if got := pick("claude-haiku-4-5", request("", plain)); got != "5x" {
+		t.Fatalf("other-model binding lost: %s", got)
+	}
+	if got := pick("claude-opus-5-5", request("", plain)); got != "20x" {
+		t.Fatalf("parent moved: %s", got)
 	}
 }

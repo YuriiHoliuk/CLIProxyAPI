@@ -762,3 +762,33 @@ func TestExtractSessionInfoEnhancedHarnesses(t *testing.T) {
 		t.Fatalf("Thread X-Parent-Thread-Id extraction failed: %+v", info)
 	}
 }
+
+func TestClaudeCodeForkSubagentDetection(t *testing.T) {
+	fork := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"<fork-boilerplate>\nYou are a worker fork. The transcript above is the parent's history.\n</fork-boilerplate>\nYour directive: run tests"}]}]}`)
+	plain := []byte(`{"messages":[{"role":"user","content":"Find the config loader"}]}`)
+	headers := func(agent string) http.Header {
+		h := http.Header{"X-Claude-Code-Session-Id": []string{"root"}}
+		if agent != "" {
+			h.Set("X-Claude-Code-Agent-Id", agent)
+		}
+		return h
+	}
+	for _, tc := range []struct {
+		name    string
+		headers http.Header
+		payload []byte
+		fork    bool
+	}{
+		{"fork", headers("a1"), fork, true},
+		{"plain subagent", headers("a2"), plain, false},
+		{"main session quoting the marker", headers(""), fork, false},
+	} {
+		info, ok := ExtractSessionInfo(tc.headers, tc.payload, nil)
+		if !ok || info.IsFork != tc.fork {
+			t.Fatalf("%s: ok=%v fork=%v", tc.name, ok, info.IsFork)
+		}
+		if tc.fork && (info.SessionID != "claude:root:agent:a1" || info.ParentSessionID != "claude:root") {
+			t.Fatalf("fork identity: %+v", info)
+		}
+	}
+}

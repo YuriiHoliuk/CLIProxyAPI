@@ -2,6 +2,7 @@
 package session
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -211,6 +212,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 				info.ParentSessionID = "claude:" + parentCandidate
 			}
 			info.SessionID = "claude:" + sid + ":agent:" + agentID
+			info.IsFork = isClaudeCodeForkPayload(payload)
 		} else {
 			info.AgentName = "main"
 			info.SessionID = "claude:" + sid
@@ -265,6 +267,7 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 					info.ParentSessionID = "claude:" + parentCandidate
 				}
 				info.AgentName = agentID
+				info.IsFork = isClaudeCodeForkPayload(payload)
 			} else {
 				info.SessionID = "claude:" + sid
 				if parentSID != "" && parentSID != sid {
@@ -941,6 +944,14 @@ func BoundSessionIdentity(id string) string {
 		prefix = prefix[:len(prefix)-1]
 	}
 	return prefix + "#" + hashHex
+}
+
+// isClaudeCodeForkPayload reports a Claude Code fork subagent. A fork resends the
+// parent's whole conversation plus a "<fork-boilerplate>" directive on every
+// turn, so it shares the parent's cached prefix; a plain subagent starts with a
+// fresh context. The JSON body keeps both markers as literal text.
+func isClaudeCodeForkPayload(payload []byte) bool {
+	return bytes.Contains(payload, []byte("<fork-boilerplate>")) && bytes.Contains(payload, []byte("You are a worker fork."))
 }
 
 func finalizeSessionInfo(info SessionInfo) (SessionInfo, bool) {
