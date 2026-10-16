@@ -54,7 +54,6 @@ h1{margin:0;font-size:26px;letter-spacing:-.01em;font-weight:650}
 .fill{position:absolute;left:0;top:0;bottom:0;border-radius:6px 0 0 6px;background:var(--c)}
 .fill[style*="width: 100%"],.fill.full{border-radius:6px}
 .bar .pct{position:absolute;top:0;bottom:0;display:flex;align-items:center;padding:0 8px;font:600 12px var(--mono);color:var(--text);white-space:nowrap}
-.bar.stale{opacity:.45;background:repeating-linear-gradient(135deg,var(--track) 0 6px,transparent 6px 12px)}
 .ends{position:absolute;top:50%;margin-top:12px;font:10.5px var(--mono);color:var(--faint);white-space:nowrap;z-index:1}
 .ends.r{transform:translateX(-100%)}
 .stats{text-align:right}
@@ -131,6 +130,7 @@ const fmtDur=ms=>{ms=Math.max(0,ms);const d=Math.floor(ms/DAY),h=Math.floor(ms%D
 const day=t=>new Date(t).toLocaleDateString([], {weekday:'short'});
 const clock=t=>new Date(t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const when=(t,week)=>week?day(t)+' '+clock(t):clock(t);
+const ago=t=>new Date(t).toDateString()===new Date().toDateString()?clock(t):when(t,true);
 const isWeek=w=>w.window_seconds>DAY/1000;
 
 function windowsFor(accounts,week){
@@ -150,9 +150,11 @@ function render(){
   const week=tab==='week',now=Date.now(),rows=windowsFor(data.accounts,week);
   if(!rows.length){chart.append(el('div','empty','No '+(week?'weekly':'5-hour')+' window observed yet.'));return}
 
-  // Domain: every bar plus "now", snapped to whole days (week) or hours (5h).
-  const unit=week?DAY:HOUR;
-  let lo=Math.min(now,...rows.map(r=>r.start)),hi=Math.max(now,...rows.map(r=>r.end));
+  // Domain: every live bar plus "now", snapped to whole days (week) or hours (5h).
+  // Windows that already reset stay out of it: one idle account would otherwise
+  // stretch a 5h axis back to its last reset, days ago.
+  const live=rows.filter(r=>r.end>now),span=live.length?live:[{start:now-rows[0].len,end:now}];
+  let lo=Math.min(now,...span.map(r=>r.start)),hi=Math.max(now,...span.map(r=>r.end));
   const snap=(t,up)=>{const d=new Date(t);if(week){d.setHours(0,0,0,0);if(up&&+d<t)d.setDate(d.getDate()+1)}else{d.setMinutes(0,0,0);if(up&&+d<t)d.setHours(d.getHours()+1)}return +d};
   lo=snap(lo,false);hi=snap(hi,true);
   const x=t=>(t-lo)/(hi-lo)*100;
@@ -190,36 +192,39 @@ function render(){
     if(a.balance.busy)meta.append(a.balance.busy+' active');
     who.append(name,meta);
 
-    const bar=el('div','bar'+(stale?' stale':''));bar.style.left=x(r.start)+'%';bar.style.width=(x(r.end)-x(r.start))+'%';
+    if(stale){
+      // No traffic since the last reset: the next window has not started yet.
+      const n=el('div','ends','reset '+ago(r.end)+' · not observed since');n.style.cssText='left:0;top:50%;margin-top:-8px';
+      n.title=(a.label||a.id)+' · '+w.name+' · last window '+when(r.start,true)+' → '+when(r.end,true)+' · reported '+new Date(w.observed_at).toLocaleString();
+      ln.append(n,marker(false));
+      st.append(el('div','left','100%'),el('div','detail','presumed fresh; reset '+ago(r.end)));
+      row.append(who,ln,st);body.append(row);
+      continue;
+    }
+    const bar=el('div','bar');bar.style.left=x(r.start)+'%';bar.style.width=(x(r.end)-x(r.start))+'%';
     bar.title=(a.label||a.id)+' · '+w.name+' · '+used.toFixed(1)+'% used · window '+when(r.start,week)+' → '+when(r.end,week)+' · reported '+new Date(w.observed_at).toLocaleString();
-    if(!stale){
-      const f=el('div','fill'+(used>=100?' full':''));f.style.setProperty('--c',color);f.style.width=used+'%';bar.append(f);
-      const p=el('div','pct',Math.round(used)+'%');
-      if(used>=18){p.style.left=0;p.style.width=used+'%';p.style.justifyContent='flex-end';p.style.color='#0d1117'}else p.style.left=used+'%';
-      bar.append(p);
-    }else bar.append(el('div','pct','reset · not observed since'));
+    const f=el('div','fill'+(used>=100?' full':''));f.style.setProperty('--c',color);f.style.width=used+'%';bar.append(f);
+    const p=el('div','pct',Math.round(used)+'%');
+    if(used>=18){p.style.left=0;p.style.width=used+'%';p.style.justifyContent='flex-end';p.style.color='#0d1117'}else p.style.left=used+'%';
+    bar.append(p);
     const e1=el('div','ends',when(r.start,week)),e2=el('div','ends r',when(r.end,week));
     e1.style.left=x(r.start)+'%';e2.style.left=x(r.end)+'%';
     ln.append(bar,e1,e2,marker(false));
 
-    if(stale){
-      st.append(el('div','left','100%'),el('div','detail','presumed fresh; reset '+clock(r.end)));
-    }else{
-      const left=100-used,remain=r.end-now,per=week?remain/DAY:remain/HOUR;
-      const big=el('div','left',Math.round(left)+'%');big.append(el('small',null,'left'));
-      const rate=per>0&&left>0?' · ≈'+(left/Math.max(per,week?1/24:1/60)).toFixed(left/per<10?1:0)+'% per '+(week?'day':'hour'):'';
-      const pace=el('div','pace',used>=100?'exhausted until '+when(r.end,week):ahead>0?Math.round(ahead)+'% ahead of pace':Math.round(-ahead)+'% spare vs pace');
-      pace.style.color=color;
-      const d=el('div','detail','resets in '+fmtDur(remain)+rate);
-      const info=el('div');info.append(d,pace);
-      if(!week&&proj&&proj.window_seconds===w.window_seconds){
-        const over=proj.projected_percent>100;
-        const pr=el('div','detail','burn '+proj.burn_rate_percent_per_hour.toFixed(1)+'%/h ('+proj.rate_source+') → '+Math.round(proj.projected_percent)+'% at reset'+(proj.spilling?' · new sessions spill':''));
-        if(over)pr.style.color='var(--warn)';
-        info.append(pr);
-      }
-      st.append(big,info);
+    const left=100-used,remain=r.end-now,per=week?remain/DAY:remain/HOUR;
+    const big=el('div','left',Math.round(left)+'%');big.append(el('small',null,'left'));
+    const rate=per>0&&left>0?' · ≈'+(left/Math.max(per,week?1/24:1/60)).toFixed(left/per<10?1:0)+'% per '+(week?'day':'hour'):'';
+    const pace=el('div','pace',used>=100?'exhausted until '+when(r.end,week):ahead>0?Math.round(ahead)+'% ahead of pace':Math.round(-ahead)+'% spare vs pace');
+    pace.style.color=color;
+    const d=el('div','detail','resets in '+fmtDur(remain)+rate);
+    const info=el('div');info.append(d,pace);
+    if(!week&&proj&&proj.window_seconds===w.window_seconds){
+      const over=proj.projected_percent>100;
+      const pr=el('div','detail','burn '+proj.burn_rate_percent_per_hour.toFixed(1)+'%/h ('+proj.rate_source+') → '+Math.round(proj.projected_percent)+'% at reset'+(proj.spilling?' · new sessions spill':''));
+      if(over)pr.style.color='var(--warn)';
+      info.append(pr);
     }
+    st.append(big,info);
     row.append(who,ln,st);body.append(row);
   }
 
