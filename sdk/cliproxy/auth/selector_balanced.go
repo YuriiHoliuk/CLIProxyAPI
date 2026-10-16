@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -32,11 +33,52 @@ type BalanceDetails struct {
 	ShortScore float64         `json:"short_score"`
 	LongScore  float64         `json:"long_score"`
 	Windows    []BalanceWindow `json:"windows"`
+	// ShortProjection is nil when the short window or its reset is unknown.
+	ShortProjection *BalanceProjection `json:"short_projection,omitempty"`
 }
 
-// BalancedSelector matches Conveyor's remaining-capacity/reset-urgency score.
-// Affinity wraps this selector and only calls it for cold bindings or failover.
-type BalancedSelector struct{ Now func() time.Time }
+// BalanceProjection estimates short-window (5h) utilization at its reset.
+type BalanceProjection struct {
+	WindowSeconds    float64   `json:"window_seconds"`
+	UsedPercent      float64   `json:"used_percent"`
+	ProjectedPercent float64   `json:"projected_percent"`
+	BurnRatePerHour  float64   `json:"burn_rate_percent_per_hour"`
+	RateSource       string    `json:"rate_source"`
+	ResetsAt         time.Time `json:"resets_at"`
+	Spilling         bool      `json:"spilling"`
+}
+
+// MinSessionAffinityTTL is the floor for configured affinity TTLs: the prompt
+// cache Claude Code writes lives 1h, and spillover must never move a session
+// whose cache is still warm.
+const MinSessionAffinityTTL = time.Hour
+
+const (
+	// A recent rate needs samples spread over at least balanceMinRateSpan within the lookback.
+	balanceRateLookback = time.Hour
+	balanceMinRateSpan  = 15 * time.Minute
+	// The elapsed-average fallback treats a younger window as this old.
+	balanceYoungWindowFloor = 30 * time.Minute
+	// History is thinned to one sample per spacing and kept for the retention period.
+	balanceHistorySpacing   = 2 * time.Minute
+	balanceHistoryRetention = 90 * time.Minute
+	balanceHistoryMax       = 64
+	// An account starts spilling above balanceSpillEnter and stops at or below balanceSpillExit.
+	balanceSpillEnter = 100.0
+	balanceSpillExit  = 95.0
+)
+
+// BalancedSelector ranks accounts by the weekly remaining-capacity/reset-urgency
+// score. A new session goes to the top account unless its projected 5h use at
+// reset exceeds 100%; then it spills down the ranking to the first account whose
+// projection fits. Affinity wraps this selector and only calls it for cold
+// bindings or failover.
+type BalancedSelector struct {
+	Now func() time.Time
+
+	mu       sync.Mutex
+	spilling map[string]bool
+}
 type balanceLoadsKey struct{}
 
 func (s *BalancedSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
@@ -55,19 +97,90 @@ func (s *BalancedSelector) Pick(ctx context.Context, provider, model string, opt
 			maxWeight = w
 		}
 	}
-	sort.SliceStable(available, func(i, j int) bool { return available[i].ID < available[j].ID })
-	var best *Auth
-	var bestScore BalanceDetails
-	for _, a := range available {
-		d := AccountBalance(a, now, maxWeight, loads[a.ID])
-		if best == nil || d.Score > bestScore.Score || (d.Score == bestScore.Score && (d.LongScore > bestScore.LongScore || (d.LongScore == bestScore.LongScore && d.ShortScore > bestScore.ShortScore))) {
-			best, bestScore = a, d
-		}
-	}
-	if best == nil {
+	if len(available) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no positive-weight credential available"}
 	}
-	return best, nil
+	sort.SliceStable(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+	ranked := make([]BalanceDetails, len(available))
+	for i, a := range available {
+		ranked[i] = AccountBalance(a, now, maxWeight, loads[a.ID])
+	}
+	order := make([]int, len(available))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := ranked[order[i]], ranked[order[j]]
+		if a.Score != b.Score {
+			return a.Score > b.Score
+		}
+		if a.LongScore != b.LongScore {
+			return a.LongScore > b.LongScore
+		}
+		return a.ShortScore > b.ShortScore
+	})
+
+	s.mu.Lock()
+	if s.spilling == nil {
+		s.spilling = make(map[string]bool)
+	}
+	fits := make([]bool, len(available))
+	for i, a := range available {
+		p := ranked[i].ShortProjection
+		switch {
+		case p == nil:
+			delete(s.spilling, a.ID)
+		case s.spilling[a.ID]:
+			s.spilling[a.ID] = p.ProjectedPercent > balanceSpillExit
+		default:
+			s.spilling[a.ID] = p.ProjectedPercent > balanceSpillEnter
+		}
+		fits[i] = !s.spilling[a.ID]
+	}
+	s.mu.Unlock()
+
+	pick := -1
+	for _, i := range order {
+		if fits[i] {
+			pick = i
+			break
+		}
+	}
+	if pick < 0 {
+		// Nothing fits: the most 5h headroom delays the first exhaustion longest.
+		pick = order[0]
+		for _, i := range order[1:] {
+			if ranked[i].ShortProjection.ProjectedPercent < ranked[pick].ShortProjection.ProjectedPercent {
+				pick = i
+			}
+		}
+	}
+	if top := order[0]; pick != top {
+		p := ranked[top].ShortProjection
+		selectorLogEntry(ctx).Debugf("balanced: 5h spillover | top=%s projected=%.0f%% rate=%.1f%%/h picked=%s", available[top].ID, p.ProjectedPercent, p.BurnRatePerHour, available[pick].ID)
+	}
+	return available[pick], nil
+}
+
+// BalancedSpilling returns the accounts whose 5h projection currently sends new
+// sessions to lower-ranked accounts. It unwraps session affinity.
+func BalancedSpilling(sel Selector) map[string]bool {
+	if affinity, ok := sel.(*SessionAffinitySelector); ok && affinity != nil {
+		sel = affinity.fallback
+	}
+	out := map[string]bool{}
+	s, ok := sel.(*BalancedSelector)
+	if !ok || s == nil {
+		return out
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, spilling := range s.spilling {
+		if spilling {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // AccountBalance is shared by routing and the passive dashboard.
@@ -97,7 +210,117 @@ func AccountBalance(a *Auth, now time.Time, maxWeight int64, busy int) BalanceDe
 	d.ShortScore = balanceWindowScore(short, now, 5, 1, 1, 1/float64(busy+1), 1)
 	d.LongScore = balanceWindowScore(long, now, 168, 5, 24, share, float64(maxWeight))
 	d.Score = d.LongScore * math.Min(d.ShortScore/0.5, 1)
+	if short != nil {
+		d.ShortProjection = projectShortWindow(*short, AccountBalanceHistory(a), now)
+	}
 	return d
+}
+
+// projectShortWindow extrapolates the current burn rate to the window's reset.
+// The rate is the change over the last hour of samples. Without a sample span
+// of balanceMinRateSpan (young window, restart, sparse traffic) it falls back to
+// the elapsed average since window start. An account without observations for
+// the whole lookback burns nothing: this proxy's own traffic is what moves it,
+// and an idle account must be able to win new sessions back.
+func projectShortWindow(w BalanceWindow, history []BalanceWindow, now time.Time) *BalanceProjection {
+	if w.ResetsAt.IsZero() || !w.ResetsAt.After(now) {
+		return nil
+	}
+	start := w.ResetsAt.Add(-time.Duration(w.WindowSeconds * float64(time.Second)))
+	p := &BalanceProjection{WindowSeconds: w.WindowSeconds, UsedPercent: w.UsedPercent, ResetsAt: w.ResetsAt}
+	var ref *BalanceWindow
+	for i := range history {
+		h := &history[i]
+		if h.WindowSeconds != w.WindowSeconds || h.ObservedAt.Before(start) || h.ObservedAt.Before(now.Add(-balanceRateLookback)) || h.UsedPercent > w.UsedPercent {
+			continue
+		}
+		if ref == nil || h.ObservedAt.Before(ref.ObservedAt) {
+			ref = h
+		}
+	}
+	switch {
+	case !w.ObservedAt.IsZero() && now.Sub(w.ObservedAt) > balanceRateLookback:
+		p.RateSource = "idle"
+	case ref != nil && w.ObservedAt.Sub(ref.ObservedAt) >= balanceMinRateSpan:
+		p.RateSource = "recent"
+		p.BurnRatePerHour = (w.UsedPercent - ref.UsedPercent) / now.Sub(ref.ObservedAt).Hours()
+	default:
+		p.RateSource = "average"
+		p.BurnRatePerHour = w.UsedPercent / math.Max(now.Sub(start).Hours(), balanceYoungWindowFloor.Hours())
+	}
+	p.BurnRatePerHour = math.Max(0, p.BurnRatePerHour)
+	p.ProjectedPercent = w.UsedPercent + p.BurnRatePerHour*w.ResetsAt.Sub(now).Hours()
+	return p
+}
+
+// AccountBalanceHistory merges runtime and persisted short-window samples.
+func AccountBalanceHistory(a *Auth) []BalanceWindow {
+	if a == nil {
+		return nil
+	}
+	samples := append([]BalanceWindow(nil), a.Quota.BalanceHistory...)
+	var persisted []BalanceWindow
+	if raw, err := json.Marshal(a.Metadata["window_history"]); err == nil && json.Unmarshal(raw, &persisted) == nil {
+		samples = append(samples, persisted...)
+	}
+	return pruneBalanceHistory(samples)
+}
+
+// recordBalanceHistory appends the short windows observed at observedAt.
+func recordBalanceHistory(history, windows []BalanceWindow, observedAt time.Time) []BalanceWindow {
+	for _, w := range windows {
+		if w.WindowSeconds <= 86400 && w.ObservedAt.Equal(observedAt) {
+			history = append(history, w)
+		}
+	}
+	return pruneBalanceHistory(history)
+}
+
+// pruneBalanceHistory keeps, per duration, the samples of the newest window:
+// utilization only grows inside a window, so a drop marks the previous one.
+func pruneBalanceHistory(samples []BalanceWindow) []BalanceWindow {
+	byWindow := map[float64][]BalanceWindow{}
+	for _, w := range samples {
+		if w.ObservedAt.IsZero() || w.WindowSeconds <= 0 || w.WindowSeconds > 86400 || math.IsNaN(w.UsedPercent) || math.IsInf(w.UsedPercent, 0) {
+			continue
+		}
+		byWindow[w.WindowSeconds] = append(byWindow[w.WindowSeconds], w)
+	}
+	var out []BalanceWindow
+	for _, list := range byWindow {
+		sort.SliceStable(list, func(i, j int) bool { return list[i].ObservedAt.Before(list[j].ObservedAt) })
+		latest := list[len(list)-1]
+		first := len(list) - 1
+		for first > 0 {
+			w := list[first-1]
+			if w.UsedPercent > list[first].UsedPercent || latest.ObservedAt.Sub(w.ObservedAt) > balanceHistoryRetention || (!latest.ResetsAt.IsZero() && w.ObservedAt.Before(latest.ResetsAt.Add(-time.Duration(latest.WindowSeconds*float64(time.Second))))) {
+				break
+			}
+			first--
+		}
+		// Thin forward so stored samples stay spaced while the latest is always kept.
+		var keep []BalanceWindow
+		for _, w := range list[first : len(list)-1] {
+			if w.ObservedAt.Equal(latest.ObservedAt) {
+				continue
+			}
+			if len(keep) == 0 || w.ObservedAt.Sub(keep[len(keep)-1].ObservedAt) >= balanceHistorySpacing {
+				keep = append(keep, w)
+			}
+		}
+		keep = append(keep, latest)
+		if len(keep) > balanceHistoryMax {
+			keep = keep[len(keep)-balanceHistoryMax:]
+		}
+		out = append(out, keep...)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].WindowSeconds != out[j].WindowSeconds {
+			return out[i].WindowSeconds < out[j].WindowSeconds
+		}
+		return out[i].ObservedAt.Before(out[j].ObservedAt)
+	})
+	return out
 }
 
 func balanceWindowScore(w *BalanceWindow, now time.Time, hours, resetFloor, elapsedFloor, share, maxWeight float64) float64 {

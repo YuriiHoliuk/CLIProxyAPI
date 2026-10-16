@@ -23,8 +23,13 @@ func (s *Server) passiveUsage(c *gin.Context) {
 	}
 	entries := make([]gin.H, 0, len(accounts))
 	now := time.Now()
+	spilling := auth.BalancedSpilling(s.handlers.AuthManager.Selector())
 	for _, a := range accounts {
-		entries = append(entries, gin.H{"id": a.ID, "label": a.Label, "provider": a.Provider, "disabled": a.Disabled, "unavailable": a.Unavailable, "balance": auth.AccountBalance(a, now, weights[a.Provider], loads[a.ID])})
+		balance := auth.AccountBalance(a, now, weights[a.Provider], loads[a.ID])
+		if balance.ShortProjection != nil {
+			balance.ShortProjection.Spilling = spilling[a.ID]
+		}
+		entries = append(entries, gin.H{"id": a.ID, "label": a.Label, "provider": a.Provider, "disabled": a.Disabled, "unavailable": a.Unavailable, "balance": balance})
 	}
 	c.JSON(http.StatusOK, gin.H{"observed_at": now, "strategy": s.cfg.Routing.Strategy, "session_affinity": s.cfg.Routing.SessionAffinity, "accounts": entries})
 }

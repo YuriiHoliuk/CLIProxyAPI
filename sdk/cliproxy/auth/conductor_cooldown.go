@@ -1034,15 +1034,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 		if !result.SkipQuotaObservation {
 			if auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now) {
-				// One journal line per observation lets quota spend be attributed
-				// to sessions afterwards; the proxy keeps no observation history.
-				selectorLogEntry(ctx).Infof("quota observation | auth=%s provider=%s model=%s session=%s windows=%s", auth.ID, result.Provider, result.Model, quotaObservationSessionID(result.Options), formatQuotaWindows(auth.Quota.BalanceWindows))
 				if auth.Metadata != nil {
 					// The existing credential store already saves metadata below. Keep
 					// bounded measured windows there so a restart needs no quota probe.
 					// Include older windows from metadata when a response is partial.
 					auth.Metadata["windows"] = AccountBalanceWindows(auth)
+					// Samples saved before a restart keep the 5h burn rate measurable.
+					auth.Quota.BalanceHistory = AccountBalanceHistory(auth)
+					auth.Metadata["window_history"] = auth.Quota.BalanceHistory
 				}
+				// One journal line per observation lets quota spend be attributed
+				// to sessions afterwards; the full history stays in the journal.
+				selectorLogEntry(ctx).Infof("quota observation | auth=%s provider=%s model=%s session=%s windows=%s projection=%s", auth.ID, result.Provider, result.Model, quotaObservationSessionID(result.Options), formatQuotaWindows(auth.Quota.BalanceWindows), formatShortProjection(AccountBalance(auth, now, 1, 0).ShortProjection))
 			}
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)

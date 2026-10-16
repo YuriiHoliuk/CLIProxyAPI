@@ -185,6 +185,8 @@ function render(){
     meta.append(el('span','badge',a.provider));
     if(a.balance.weight>1)meta.append(el('span','badge','×'+a.balance.weight));
     if(a.disabled)meta.append(el('span','badge alert','disabled'));else if(a.unavailable)meta.append(el('span','badge alert','cooldown'));
+    const proj=a.balance.short_projection;
+    if(!week&&proj&&proj.spilling)meta.append(el('span','badge alert','spilling'));
     if(a.balance.busy)meta.append(a.balance.busy+' active');
     who.append(name,meta);
 
@@ -209,7 +211,14 @@ function render(){
       const pace=el('div','pace',used>=100?'exhausted until '+when(r.end,week):ahead>0?Math.round(ahead)+'% ahead of pace':Math.round(-ahead)+'% spare vs pace');
       pace.style.color=color;
       const d=el('div','detail','resets in '+fmtDur(remain)+rate);
-      const info=el('div');info.append(d,pace);st.append(big,info);
+      const info=el('div');info.append(d,pace);
+      if(!week&&proj&&proj.window_seconds===w.window_seconds){
+        const over=proj.projected_percent>100;
+        const pr=el('div','detail','burn '+proj.burn_rate_percent_per_hour.toFixed(1)+'%/h ('+proj.rate_source+') → '+Math.round(proj.projected_percent)+'% at reset'+(proj.spilling?' · new sessions spill':''));
+        if(over)pr.style.color='var(--warn)';
+        info.append(pr);
+      }
+      st.append(big,info);
     }
     row.append(who,ln,st);body.append(row);
   }

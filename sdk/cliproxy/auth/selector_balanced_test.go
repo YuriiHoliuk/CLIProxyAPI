@@ -299,3 +299,302 @@ func TestAccountBalanceWindowsRetainsResetOnPartialResponse(t *testing.T) {
 		t.Fatal("expired reset carried into new window")
 	}
 }
+
+// withShortWindow adds a 5h observation at now and history samples given as
+// minutes-ago → used percent.
+func withShortWindow(a *Auth, used float64, reset, now time.Time, history map[int]float64) *Auth {
+	a.Quota.Signals["Anthropic-Ratelimit-Unified-5h-Utilization"] = fmt.Sprint(used / 100)
+	a.Quota.Signals["Anthropic-Ratelimit-Unified-5h-Reset"] = fmt.Sprint(reset.Unix())
+	a.Quota.ObservedAt = now
+	a.Quota.BalanceHistory = nil
+	for ago, u := range history {
+		a.Quota.BalanceHistory = append(a.Quota.BalanceHistory, BalanceWindow{Name: "5h", UsedPercent: u, WindowSeconds: 18000, ResetsAt: reset, ObservedAt: now.Add(-time.Duration(ago) * time.Minute), Source: "response"})
+	}
+	return a
+}
+
+func pickID(t *testing.T, s *BalancedSelector, auths ...*Auth) string {
+	t.Helper()
+	picked, err := s.Pick(context.Background(), "claude", "", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return picked.ID
+}
+
+func TestBalancedFiveHourSpillover(t *testing.T) {
+	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
+	s := &BalancedSelector{Now: func() time.Time { return now }}
+	// 2026-10-15: 20x had 63% weekly left resetting next morning, 5x was fresh.
+	big := balanceAuth("20x", 4, 37, now.Add(14*time.Hour), now)
+	small := balanceAuth("5x", 1, 2, now.Add(150*time.Hour), now)
+	if got := pickID(t, s, big, small); got != "20x" {
+		t.Fatalf("weekly ranking changed: %s", got)
+	}
+	// High burn: 23% → 60% in the last hour with 3h left projects far past 100%.
+	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 25, 30: 42})
+	if got := pickID(t, s, big, small); got != "5x" {
+		t.Fatalf("high burn did not spill: %s %+v", got, AccountBalance(big, now, 4, 0).ShortProjection)
+	}
+	if p := AccountBalance(big, now, 4, 0).ShortProjection; p.RateSource != "recent" || p.ProjectedPercent < 150 {
+		t.Fatalf("projection: %+v", p)
+	}
+	if !BalancedSpilling(NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: s}))["20x"] {
+		t.Fatal("spilling state not exposed through affinity")
+	}
+	// Low burn: 55% → 60% over the last hour fits before reset.
+	s = &BalancedSelector{Now: func() time.Time { return now }}
+	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 55, 30: 58})
+	if got := pickID(t, s, big, small); got != "20x" {
+		t.Fatalf("low burn spilled: %s %+v", got, AccountBalance(big, now, 4, 0).ShortProjection)
+	}
+	// Both exhaust before reset: the account with more 5h headroom takes the session.
+	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 25, 30: 42})
+	withShortWindow(small, 70, now.Add(3*time.Hour), now, map[int]float64{55: 60, 30: 65})
+	if got := pickID(t, s, big, small); got != "5x" {
+		t.Fatalf("most headroom not chosen: %s", got)
+	}
+}
+
+func TestBalancedFiveHourSpilloverCascadesAcrossThree(t *testing.T) {
+	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
+	s := &BalancedSelector{Now: func() time.Time { return now }}
+	first := balanceAuth("a-20x", 4, 37, now.Add(14*time.Hour), now)
+	second := balanceAuth("b-20x", 4, 50, now.Add(100*time.Hour), now)
+	third := balanceAuth("c-5x", 1, 2, now.Add(150*time.Hour), now)
+	if got := pickID(t, s, third, second, first); got != "a-20x" {
+		t.Fatalf("ranking: %s", got)
+	}
+	hot := map[int]float64{55: 25, 30: 42}
+	withShortWindow(first, 60, now.Add(3*time.Hour), now, hot)
+	if got := pickID(t, s, third, second, first); got != "b-20x" {
+		t.Fatalf("first spill: %s", got)
+	}
+	withShortWindow(second, 60, now.Add(3*time.Hour), now, hot)
+	if got := pickID(t, s, third, second, first); got != "c-5x" {
+		t.Fatalf("cascade: %s", got)
+	}
+	// The top account's burn cools down: new sessions return to it.
+	withShortWindow(first, 60, now.Add(3*time.Hour), now, map[int]float64{55: 58, 30: 59})
+	if got := pickID(t, s, third, second, first); got != "a-20x" {
+		t.Fatalf("return to top: %s", got)
+	}
+	// Excluded accounts stay excluded even when they would fit.
+	first.Disabled = true
+	withShortWindow(second, 60, now.Add(3*time.Hour), now, hot)
+	third.Attributes[AttributeWeight] = "0"
+	if got := pickID(t, s, third, second, first); got != "b-20x" {
+		t.Fatalf("excluded account picked: %s", got)
+	}
+}
+
+func TestBalancedFiveHourYoungWindowAndEdgeCases(t *testing.T) {
+	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
+	s := &BalancedSelector{Now: func() time.Time { return now }}
+	big := balanceAuth("20x", 4, 37, now.Add(14*time.Hour), now)
+	small := balanceAuth("5x", 1, 2, now.Add(150*time.Hour), now)
+	// 12 minutes into the window: 2% → 8% in 10 minutes is too short a span for a
+	// recent rate, and the elapsed average is floored at 30 minutes.
+	reset := now.Add(5*time.Hour - 12*time.Minute)
+	withShortWindow(big, 8, reset, now, map[int]float64{10: 2})
+	p := AccountBalance(big, now, 4, 0).ShortProjection
+	if p.RateSource != "average" || p.BurnRatePerHour != 16 || p.ProjectedPercent > 100 {
+		t.Fatalf("young window: %+v", p)
+	}
+	if got := pickID(t, s, big, small); got != "20x" {
+		t.Fatalf("young window spilled: %s", got)
+	}
+	// Samples from the previous window are ignored.
+	withShortWindow(big, 8, reset, now, map[int]float64{10: 2, 40: 90})
+	if p := AccountBalance(big, now, 4, 0).ShortProjection; p.RateSource != "average" {
+		t.Fatalf("previous window used: %+v", p)
+	}
+	// No observation for over an hour: the account is idle and can win sessions back.
+	withShortWindow(big, 90, now.Add(2*time.Hour), now.Add(-70*time.Minute), map[int]float64{100: 20})
+	if p := AccountBalance(big, now, 4, 0).ShortProjection; p.RateSource != "idle" || p.ProjectedPercent != 90 {
+		t.Fatalf("stale: %+v", p)
+	}
+	// An elapsed reset is a fresh, unknown window.
+	withShortWindow(big, 99, now.Add(-time.Minute), now.Add(-2*time.Hour), nil)
+	if p := AccountBalance(big, now, 4, 0).ShortProjection; p != nil {
+		t.Fatalf("elapsed reset projected: %+v", p)
+	}
+	// No history at all: the elapsed average since window start (3h in, 90% used → 30%/h).
+	withShortWindow(big, 90, now.Add(2*time.Hour), now, nil)
+	if p := AccountBalance(big, now, 4, 0).ShortProjection; p.RateSource != "average" || p.ProjectedPercent != 150 {
+		t.Fatalf("no history: %+v", p)
+	}
+	// Codex primary 5h windows project the same way.
+	codex := &Auth{ID: "codex", Provider: "codex", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{"X-Codex-Primary-Used-Percent": "50", "X-Codex-Primary-Window-Minutes": "300", "X-Codex-Primary-Reset-After-Seconds": "3600", "X-Codex-Secondary-Used-Percent": "10", "X-Codex-Secondary-Window-Minutes": "10080", "X-Codex-Secondary-Reset-After-Seconds": "86400"}}}
+	if p := AccountBalance(codex, now, 1, 0).ShortProjection; p == nil || p.WindowSeconds != 18000 || p.ProjectedPercent != 62.5 {
+		t.Fatalf("codex: %+v", p)
+	}
+}
+
+func TestBalancedFiveHourHysteresis(t *testing.T) {
+	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
+	s := &BalancedSelector{Now: func() time.Time { return now }}
+	big := balanceAuth("20x", 4, 37, now.Add(14*time.Hour), now)
+	small := balanceAuth("5x", 1, 2, now.Add(150*time.Hour), now)
+	// used 50%, one hour left, ref 30 minutes ago: projected = 50 + 2*(50-ref).
+	at := func(ref float64) *Auth {
+		return withShortWindow(big, 50, now.Add(time.Hour), now, map[int]float64{30: ref})
+	}
+	for _, step := range []struct {
+		ref  float64
+		want string
+	}{{26, "20x"}, {15, "5x"}, {26, "5x"}, {28, "20x"}, {26, "20x"}, {24, "5x"}} {
+		at(step.ref)
+		if got := pickID(t, s, big, small); got != step.want {
+			t.Fatalf("ref %v (projected %.0f%%): got %s want %s", step.ref, AccountBalance(big, now, 4, 0).ShortProjection.ProjectedPercent, got, step.want)
+		}
+	}
+}
+
+func TestBalancedHistoryBoundedAndPersisted(t *testing.T) {
+	now := time.Date(2026, 10, 15, 17, 0, 0, 0, time.UTC)
+	q := QuotaState{}
+	reset := fmt.Sprint(now.Add(4 * time.Hour).Unix())
+	for i := 0; i < 600; i++ {
+		used := fmt.Sprint(float64(i) / 1000)
+		q.ObserveResponseHeadersForProvider("claude", http.Header{"Anthropic-Ratelimit-Unified-5h-Utilization": []string{used}, "Anthropic-Ratelimit-Unified-5h-Reset": []string{reset}, "Anthropic-Ratelimit-Unified-7d-Utilization": []string{"0.1"}}, now.Add(time.Duration(i)*15*time.Second))
+	}
+	h := q.BalanceHistory
+	if len(h) < 40 || len(h) > balanceHistoryMax {
+		t.Fatalf("history size %d", len(h))
+	}
+	for i := 1; i < len(h)-1; i++ {
+		if h[i].ObservedAt.Sub(h[i-1].ObservedAt) < balanceHistorySpacing || h[i].WindowSeconds != 18000 {
+			t.Fatalf("history spacing/window: %+v", h[i])
+		}
+	}
+	if last := h[len(h)-1]; !last.ObservedAt.Equal(now.Add(599*15*time.Second)) || h[0].ObservedAt.Before(last.ObservedAt.Add(-balanceHistoryRetention)) {
+		t.Fatalf("history bounds: %v..%v", h[0].ObservedAt, last.ObservedAt)
+	}
+	// A reset (utilization drop) starts a new history.
+	q.ObserveResponseHeadersForProvider("claude", http.Header{"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.01"}, "Anthropic-Ratelimit-Unified-5h-Reset": []string{fmt.Sprint(now.Add(9 * time.Hour).Unix())}}, now.Add(4*time.Hour+time.Minute))
+	if len(q.BalanceHistory) != 1 {
+		t.Fatalf("reset kept old samples: %d", len(q.BalanceHistory))
+	}
+	// Persisted metadata (after a JSON reload) is merged back with runtime samples.
+	raw, _ := json.Marshal(h)
+	var persisted any
+	_ = json.Unmarshal(raw, &persisted)
+	a := &Auth{Metadata: map[string]any{"window_history": persisted}, Quota: QuotaState{BalanceHistory: h[len(h)-1:]}}
+	if got := AccountBalanceHistory(a); len(got) != len(h) {
+		t.Fatalf("persisted history merge: %d != %d", len(got), len(h))
+	}
+}
+
+func TestSessionAffinityOneHourSlidingTTL(t *testing.T) {
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	balanced := &BalancedSelector{Now: clock}
+	affinity := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: balanced, TTL: time.Hour})
+	defer affinity.Stop()
+	affinity.cache.now = clock
+	affinity.sessions.now = clock
+	a := balanceAuth("a", 4, 10, now.Add(100*time.Hour), now)
+	b := balanceAuth("b", 4, 50, now.Add(100*time.Hour), now)
+	opts := func(session string) cliproxyexecutor.Options {
+		return cliproxyexecutor.Options{Headers: http.Header{"X-Claude-Code-Session-Id": []string{session}}, Metadata: map[string]any{}}
+	}
+	pick := func(session string) string {
+		t.Helper()
+		picked, err := affinity.Pick(context.Background(), "claude", "model", opts(session), []*Auth{a, b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return picked.ID
+	}
+	if got := pick("root"); got != "a" {
+		t.Fatalf("initial: %s", got)
+	}
+	// Account b becomes the better pick; the session stays while requests come under 1h apart.
+	a.Quota.Signals["Anthropic-Ratelimit-Unified-7d-Utilization"] = "0.9"
+	for i := 0; i < 4; i++ {
+		now = now.Add(50 * time.Minute)
+		if got := pick("root"); got != "a" {
+			t.Fatalf("binding lost after %d refreshes: %s", i, got)
+		}
+	}
+	// A successful result refreshes the binding too.
+	now = now.Add(50 * time.Minute)
+	affinity.OnResult(Result{AuthID: "a", Provider: "claude", Model: "model", Success: true, Options: opts("root")})
+	now = now.Add(50 * time.Minute)
+	if got := pick("root"); got != "a" {
+		t.Fatalf("OnResult did not refresh: %s", got)
+	}
+	// One idle hour: the session gets a fresh pick.
+	now = now.Add(time.Hour + time.Second)
+	if got := pick("root"); got != "b" {
+		t.Fatalf("idle binding not released: %s", got)
+	}
+}
+
+// Spillover only routes sessions without a live binding: a bound session keeps
+// its account (and prompt cache) while that account spills, and so do its
+// side requests on other models and its subagents.
+func TestBalancedSpilloverNeverMovesBoundSession(t *testing.T) {
+	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
+	balanced := &BalancedSelector{Now: func() time.Time { return now }}
+	affinity := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: balanced, TTL: time.Hour})
+	defer affinity.Stop()
+	big := balanceAuth("20x", 4, 37, now.Add(14*time.Hour), now)
+	small := balanceAuth("5x", 1, 2, now.Add(150*time.Hour), now)
+	auths := []*Auth{big, small}
+	headers := func(kv ...string) cliproxyexecutor.Options {
+		h := http.Header{}
+		for i := 0; i < len(kv); i += 2 {
+			h.Set(kv[i], kv[i+1])
+		}
+		return cliproxyexecutor.Options{Headers: h, Metadata: map[string]any{}}
+	}
+	pick := func(model string, opts cliproxyexecutor.Options) string {
+		t.Helper()
+		picked, err := affinity.Pick(context.Background(), "claude", model, opts, auths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return picked.ID
+	}
+	root := headers("X-Claude-Code-Session-Id", "root")
+	if got := pick("claude-opus-4-8", root); got != "20x" {
+		t.Fatalf("initial: %s", got)
+	}
+	// 20x starts burning its 5h window too fast and spills.
+	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 25, 30: 42})
+	if got := pick("claude-opus-4-8", headers("X-Claude-Code-Session-Id", "new")); got != "5x" {
+		t.Fatalf("new session did not spill: %s", got)
+	}
+	if !BalancedSpilling(affinity)["20x"] {
+		t.Fatal("20x not spilling")
+	}
+	for i := 0; i < 3; i++ {
+		if got := pick("claude-opus-4-8", root); got != "20x" {
+			t.Fatalf("bound session moved by spillover: %s", got)
+		}
+	}
+	// A Haiku side request in the bound session stays on the session's account.
+	if got := pick("claude-haiku-4-5", root); got != "20x" {
+		t.Fatalf("side request spilled: %s", got)
+	}
+	// Subagents inherit the parent's account even on another model.
+	sub := headers("X-Claude-Code-Session-Id", "root", "X-Claude-Code-Agent-Id", "explore-1")
+	if got := pick("claude-haiku-4-5", sub); got != "20x" {
+		t.Fatalf("subagent spilled: %s", got)
+	}
+	if got := pick("claude-sonnet-4-6", sub); got != "20x" {
+		t.Fatalf("subagent model switch spilled: %s", got)
+	}
+	// Only real unavailability (a 429 cooldown) moves the bound session.
+	// Availability is checked against the wall clock.
+	recover := time.Now().Add(time.Hour)
+	big.Unavailable = true
+	big.Status = StatusError
+	big.NextRetryAfter = recover
+	big.Quota = QuotaState{Exceeded: true, NextRecoverAt: recover}
+	if got := pick("claude-opus-4-8", root); got != "5x" {
+		t.Fatalf("unavailable account kept: %s", got)
+	}
+}
