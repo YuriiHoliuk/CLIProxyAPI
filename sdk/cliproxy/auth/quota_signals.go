@@ -56,6 +56,7 @@ func (q *QuotaState) ObserveResponseHeadersForProvider(provider string, headers 
 	q.Signals = next
 	q.ObservedAt = observedAt
 	q.BalanceWindows = AccountBalanceWindows(&Auth{Provider: provider, Quota: *q})
+	q.BalanceHistory = recordBalanceHistory(q.BalanceHistory, q.BalanceWindows, observedAt)
 	return true
 }
 
@@ -67,6 +68,7 @@ func (q *QuotaState) ClearObservationSignals() bool {
 	}
 	q.Signals = nil
 	q.BalanceWindows = nil
+	q.BalanceHistory = nil
 	q.ObservedAt = time.Time{}
 	return true
 }
@@ -247,6 +249,14 @@ func formatQuotaWindows(windows []BalanceWindow) string {
 		parts = append(parts, part)
 	}
 	return strings.Join(parts, ",")
+}
+
+// formatShortProjection renders the 5h projection as "118%@24.1%/h(recent)".
+func formatShortProjection(p *BalanceProjection) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.FormatFloat(math.Round(p.ProjectedPercent), 'f', -1, 64) + "%@" + strconv.FormatFloat(math.Round(p.BurnRatePerHour*10)/10, 'f', -1, 64) + "%/h(" + p.RateSource + ")"
 }
 
 // quotaObservationSessionID returns the full session identity of a result. The

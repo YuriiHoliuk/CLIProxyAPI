@@ -910,8 +910,12 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 // It extracts session ID from multiple sources and maintains session-to-auth
 // mappings with automatic failover when the bound auth becomes unavailable.
 type SessionAffinitySelector struct {
-	fallback         Selector
-	cache            *SessionCache
+	fallback Selector
+	cache    *SessionCache
+	// sessions binds provider::session regardless of model, so side requests on
+	// another model (Haiku) and subagents on another model stay on the account
+	// that holds the session's cache instead of taking a fresh balanced pick.
+	sessions         *SessionCache
 	matcher          *cliproxysession.MerklePrefixMatcher
 	subagentAffinity bool
 }
@@ -946,6 +950,7 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 	return &SessionAffinitySelector{
 		fallback:         cfg.Fallback,
 		cache:            NewSessionCache(cfg.TTL),
+		sessions:         NewSessionCache(cfg.TTL),
 		matcher:          cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
 		subagentAffinity: subagentAffinity,
 	}
@@ -1051,12 +1056,18 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if fallbackID != "" && fallbackID != primaryID {
 		fallbackKey = provider + "::" + fallbackID + "::" + modelKey
 	}
+	sessionKey := provider + "::" + primaryID
+	parentSessionKey := ""
+	if fallbackID != "" && fallbackID != primaryID {
+		parentSessionKey = provider + "::" + fallbackID
+	}
 	bind := func(authID string) {
 		if fallbackKey != "" && !isSubagent && !isFork {
 			s.cache.SetAliases(authID, cacheKey, fallbackKey)
 		} else {
 			s.cache.Set(cacheKey, authID)
 		}
+		s.sessions.Set(sessionKey, authID)
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
@@ -1093,6 +1104,24 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 						}
 						return auth, nil
 					}
+				}
+			}
+		}
+	}
+
+	// A cold model binding inherits the session's (or its parent's) account when
+	// that account serves this model, so it is not spilled away from the cache.
+	inherit := []string{sessionKey}
+	if parentSessionKey != "" && (!isSubagent || s.subagentAffinity) {
+		inherit = append(inherit, parentSessionKey)
+	}
+	for _, key := range inherit {
+		if cachedAuthID, ok := s.sessions.Get(key); ok {
+			for _, auth := range available {
+				if auth.ID == cachedAuthID {
+					bind(auth.ID)
+					entry.Infof("session-affinity: session account inherited | session=%s key=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(key), auth.ID, provider, model)
+					return auth, nil
 				}
 			}
 		}
@@ -1347,6 +1376,9 @@ func (s *SessionAffinitySelector) Stop() {
 	if s.cache != nil {
 		s.cache.Stop()
 	}
+	if s.sessions != nil {
+		s.sessions.Stop()
+	}
 	if s.matcher != nil {
 		s.matcher.Clear()
 	}
@@ -1360,6 +1392,9 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 	}
 	if s.cache != nil {
 		s.cache.InvalidateAuth(authID)
+	}
+	if s.sessions != nil {
+		s.sessions.InvalidateAuth(authID)
 	}
 	if s.matcher != nil {
 		s.matcher.InvalidateAuth(authID)
@@ -1549,15 +1584,21 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 	if fallbackID != "" && fallbackID != primaryID && !isSubagentSession(primaryID, fallbackID) {
 		fallbackKey = ns + "::" + fallbackID + "::" + nsModel
 	}
+	sessionKey := ""
+	if primaryID != "" {
+		sessionKey = ns + "::" + primaryID
+	}
 	if res.Success {
 		s.cache.Touch(cacheKey, res.AuthID)
 		if fallbackKey != "" {
 			s.cache.Touch(fallbackKey, res.AuthID)
 		}
+		s.sessions.Touch(sessionKey, res.AuthID)
 		return
 	}
 
 	s.cache.CompareAndDelete(cacheKey, res.AuthID)
+	s.sessions.CompareAndDelete(sessionKey, res.AuthID)
 	if fallbackKey != "" {
 		s.cache.CompareAndDelete(fallbackKey, res.AuthID)
 	}

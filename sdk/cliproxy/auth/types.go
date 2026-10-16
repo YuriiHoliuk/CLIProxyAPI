@@ -197,12 +197,15 @@ type QuotaState struct {
 	Signals map[string]string `json:"signals,omitempty"`
 	// BalanceWindows retains the newest passive observation per duration across partial responses.
 	BalanceWindows []BalanceWindow `json:"balance_windows,omitempty"`
+	// BalanceHistory keeps bounded short-window samples for the burn-rate projection.
+	BalanceHistory []BalanceWindow `json:"balance_history,omitempty"`
 }
 
 // Clone returns an independent copy of the quota state.
 func (q QuotaState) Clone() QuotaState {
 	copyQuota := q
 	copyQuota.BalanceWindows = append([]BalanceWindow(nil), q.BalanceWindows...)
+	copyQuota.BalanceHistory = append([]BalanceWindow(nil), q.BalanceHistory...)
 	if len(q.Signals) > 0 {
 		copyQuota.Signals = make(map[string]string, len(q.Signals))
 		for key, value := range q.Signals {

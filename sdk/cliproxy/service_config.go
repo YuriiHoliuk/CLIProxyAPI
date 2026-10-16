@@ -53,8 +53,10 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	state.sessionAffinity = cfg.Routing.SessionAffinity
 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
 		if parsed, errParse := time.ParseDuration(ttl); errParse == nil && parsed > 0 {
-			if parsed < time.Second {
-				parsed = time.Second
+			// A binding shorter than the client's 1h prompt cache would move live
+			// sessions off their cached prefix, which costs more than any routing gain.
+			if parsed < coreauth.MinSessionAffinityTTL {
+				parsed = coreauth.MinSessionAffinityTTL
 			}
 			state.sessionAffinityTTL = parsed
 		}
