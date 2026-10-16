@@ -164,7 +164,8 @@ routing:
   # to the parent's upstream credential across all providers (Claude, Codex, Antigravity, Gemini),
   # maximizing Prompt/KV Cache reuse and minimizing TTFT.
   # When false, subagents are distributed across the credential pool via the fallback selector
-  # for maximum parallel concurrency.
+  # for maximum parallel concurrency, and each then keeps its own binding. Forks (Claude Code
+  # "fork" subagents, Codex forks), which resend the parent's prefix, still inherit the parent.
   # Ignored when routing.session-affinity is false.
   session-affinity-subagents: true
 

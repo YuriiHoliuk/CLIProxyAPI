@@ -371,7 +371,8 @@ type RoutingConfig struct {
 	// SessionAffinitySubagents controls whether subagents (child sessions with parent references)
 	// inherit and bind to the parent's upstream credential across all providers (Claude, Codex,
 	// Antigravity, Gemini), maximizing prompt and KV cache reuse.
-	// When false, subagents are distributed across the credential pool via the fallback selector.
+	// When false, subagents are distributed across the credential pool via the fallback selector
+	// and keep their own binding; forks, which resend the parent's prefix, still inherit.
 	// Default: true. Ignored when SessionAffinity is false.
 	SessionAffinitySubagents *bool `yaml:"session-affinity-subagents,omitempty" json:"session-affinity-subagents,omitempty"`
 }
