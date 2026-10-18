@@ -61,6 +61,12 @@ h1{margin:0;font-size:26px;letter-spacing:-.01em;font-weight:650}
 .left small{font:500 12px var(--sans);color:var(--muted);letter-spacing:0;margin-left:3px}
 .detail{color:var(--muted);font:11.5px/1.5 var(--mono)}
 .pace{font:600 11.5px/1.5 var(--mono)}
+.pools{display:grid;gap:10px;margin-bottom:14px}
+.pool{display:grid;grid-template-columns:180px 1fr 230px;gap:0 16px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 18px}
+.pool .gauge{position:relative;height:14px;border-radius:5px;background:var(--track)}
+.pool .gauge .fill{border-radius:5px}
+.pool .gauge .mark{position:absolute;top:-5px;bottom:-5px;left:50%;width:2px;margin-left:-1px;background:var(--now)}
+.pool .gauge .mark span{position:absolute;top:-15px;left:5px;font:600 10.5px var(--mono);color:var(--now);white-space:nowrap}
 .empty{padding:28px 0;color:var(--muted);text-align:center}
 .legend{display:flex;flex-wrap:wrap;gap:8px 22px;margin:14px 2px 0;color:var(--muted);font-size:12.5px}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:6px;background:var(--c)}
@@ -79,6 +85,9 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
   .row .lane{height:52px}
   .row .stats{display:flex;justify-content:space-between;align-items:baseline;gap:10px;text-align:left}
   .left{font-size:18px}
+  .pool{grid-template-columns:1fr;gap:8px;padding:10px 12px}
+  .pool .gauge{margin-top:14px}
+  .pool .stats{text-align:left}
   .gridlayer{display:none}
 }
 @media (prefers-reduced-motion:no-preference){.fill{transition:width .4s ease}}
@@ -97,6 +106,7 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
     </div>
   </header>
 
+  <div class="pools" id="pools"></div>
   <div class="card"><div class="chart" id="chart"></div></div>
 
   <div class="legend">
@@ -119,7 +129,7 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
 // even burn would be: a fill that crosses it is spending faster than the window
 // refills. Data comes from /usage (local snapshots only, no provider calls).
 const HOUR=3600e3,DAY=24*HOUR;
-const chart=document.getElementById('chart'),state=document.getElementById('state'),error=document.getElementById('error');
+const chart=document.getElementById('chart'),pools=document.getElementById('pools'),state=document.getElementById('state'),error=document.getElementById('error');
 let key=sessionStorage.getItem('proxy-key')||'',data=null,tab=location.hash==='#5h'?'5h':'week';
 document.getElementById('key').value=key;
 document.getElementById('save').onclick=()=>{key=document.getElementById('key').value;sessionStorage.setItem('proxy-key',key);refresh()};
@@ -143,11 +153,49 @@ function windowsFor(accounts,week){
   return out;
 }
 
+// A pool is one provider's accounts. Each account adds its weight (×4 = a 20x
+// plan) to both sides: capacity is a full window per window length, burn is its
+// recent rate. Weekly windows keep no history, so their rate is the average
+// since the window opened (floored at a day); 5h windows use the projection's
+// last-hour rate. A window that reset without traffic burns nothing, and an
+// account out of weekly quota adds no 5h capacity: it cannot serve until reset.
+function renderPools(rows,week,now){
+  pools.replaceChildren();
+  const by={},weekOut=a=>(a.balance.windows||[]).some(w=>isWeek(w)&&w.used_percent>=100&&Date.parse(w.resets_at)>now);
+  for(const r of rows)if(!r.a.disabled&&(week||!weekOut(r.a)))(by[r.a.provider]=by[r.a.provider]||[]).push(r);
+  for(const [provider,list] of Object.entries(by)){
+    if(list.length<2)continue;
+    let burn=0,cap=0,weight=0;
+    for(const r of list){
+      const wt=r.a.balance.weight||1,hours=r.len/HOUR,proj=r.a.balance.short_projection;
+      weight+=wt;cap+=wt*100/hours;
+      if(r.end<=now)continue;
+      const used=Math.min(100,Math.max(0,r.w.used_percent));
+      burn+=wt*(!week&&proj&&proj.window_seconds===r.w.window_seconds?proj.burn_rate_percent_per_hour:used/Math.max((now-r.start)/HOUR,week?24:.5));
+    }
+    const ratio=burn/cap,over=ratio>1,unit=week?'day':'hour',per=week?24:1;
+    const share=v=>(v/weight*per).toFixed(v/weight*per<10?1:0)+'%';
+    const row=el('div','pool'),who=el('div','who'),gauge=el('div','gauge'),st=el('div','stats');
+    const meta=el('div','meta');meta.append(el('span','badge',provider),list.length+' accounts · ×'+weight+' total');
+    who.append(el('div','name',provider+' pool'),meta);
+    const f=el('div','fill'+(ratio>=2?' full':''));f.style.setProperty('--c',over?'var(--warn)':'var(--ok)');f.style.width=Math.min(ratio,2)*50+'%';
+    const mark=el('div','mark');mark.append(el('span',null,'refill'));
+    gauge.append(f,mark);
+    gauge.title=week?'Average burn since each weekly window opened':'Burn over the last hour of each 5-hour window';
+    const big=el('div','left',Math.round(ratio*100)+'%');big.append(el('small',null,'of refill'));
+    const pace=el('div','pace',over?Math.round((ratio-1)*100)+'% faster than the pool refills':Math.round((1-ratio)*100)+'% spare capacity');
+    pace.style.color=over?'var(--warn)':'var(--ok)';
+    st.append(big,el('div','detail','burn ≈'+share(burn)+' of pool per '+unit+' · refill '+share(cap)),pace);
+    row.append(who,gauge,st);pools.append(row);
+  }
+}
+
 function render(){
   for(const b of document.querySelectorAll('.tabs button'))b.setAttribute('aria-selected',b.dataset.tab===tab);
-  chart.replaceChildren();
+  chart.replaceChildren();pools.replaceChildren();
   if(!data)return;
   const week=tab==='week',now=Date.now(),rows=windowsFor(data.accounts,week);
+  renderPools(rows,week,now);
   if(!rows.length){chart.append(el('div','empty','No '+(week?'weekly':'5-hour')+' window observed yet.'));return}
 
   // Domain: every live bar plus "now", snapped to whole days (week) or hours (5h).
