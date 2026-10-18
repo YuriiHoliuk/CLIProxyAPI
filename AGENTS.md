@@ -4,6 +4,7 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 
 ## Repository
 - GitHub: https://github.com/router-for-me/CLIProxyAPI
+- This checkout is the fork `YuriiHoliuk/CLIProxyAPI` (`origin`); `upstream` is router-for-me. Ship every change as a PR against the fork's `main` and merge it yourself without asking: `gh pr create --repo YuriiHoliuk/CLIProxyAPI --base main`, then `gh pr merge --repo YuriiHoliuk/CLIProxyAPI`. Always pass `--repo`: the `gh` default repo is upstream, which receives PRs only when the user asks.
 
 ## Commands
 ```bash
