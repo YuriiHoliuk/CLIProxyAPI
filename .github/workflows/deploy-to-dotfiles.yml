@@ -1,0 +1,65 @@
+# Deploys a merge to main: pins the commit in the dotfiles CLIProxyAPI source
+# manifest. dotfiles-auto-update on the Jetson then builds and installs it.
+# DOTFILES_DEPLOY_KEY is a write deploy key of YuriiHoliuk/dotfiles.
+name: deploy-to-dotfiles
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-to-dotfiles
+  cancel-in-progress: false
+
+jobs:
+  pin:
+    if: github.repository == 'YuriiHoliuk/CLIProxyAPI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: fork
+      - uses: actions/checkout@v4
+        with:
+          repository: YuriiHoliuk/dotfiles
+          ssh-key: ${{ secrets.DOTFILES_DEPLOY_KEY }}
+          path: dotfiles
+      - name: Pin this commit
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          manifest=home-files/.config/dotfiles/cliproxy-source.json
+          cd dotfiles
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          subject=$(git -C ../fork log -1 --format=%s "$REVISION")
+          for attempt in 1 2 3; do
+            current=$(jq -r .revision "$manifest")
+            if [ "$current" = "$REVISION" ]; then
+              echo "Already pinned at $REVISION"
+              exit 0
+            fi
+            # Never move the pin backwards or sideways, e.g. after a late run.
+            if ! git -C ../fork merge-base --is-ancestor "$current" "$REVISION"; then
+              echo "::error::$REVISION does not descend from the pinned $current; pin it by hand"
+              exit 1
+            fi
+            jq --arg revision "$REVISION" '.revision = $revision' "$manifest" > "$manifest.new"
+            mv "$manifest.new" "$manifest"
+            git commit -qm "Deploy CLIProxyAPI ${REVISION:0:7}: $subject" \
+              -m "https://github.com/YuriiHoliuk/CLIProxyAPI/commit/$REVISION" "$manifest"
+            if git push -q origin HEAD:main; then
+              exit 0
+            fi
+            git fetch -q origin main
+            git reset -q --hard origin/main
+          done
+          echo "::error::Could not push the pin after 3 attempts"
+          exit 1
