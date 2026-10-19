@@ -67,6 +67,8 @@ h1{margin:0;font-size:26px;letter-spacing:-.01em;font-weight:650}
 .pool .gauge .fill{border-radius:5px}
 .pool .gauge .mark{position:absolute;top:-5px;bottom:-5px;left:50%;width:2px;margin-left:-1px;background:var(--now)}
 .pool .gauge .mark span{position:absolute;top:-15px;left:5px;font:600 10.5px var(--mono);color:var(--now);white-space:nowrap}
+.pool .gauge.units{height:6px;margin-top:8px;overflow:hidden}
+.pool .units-cap{margin-top:3px;color:var(--faint);font:11px/1.4 var(--mono)}
 .empty{padding:28px 0;color:var(--muted);text-align:center}
 .legend{display:flex;flex-wrap:wrap;gap:8px 22px;margin:14px 2px 0;color:var(--muted);font-size:12.5px}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:6px;background:var(--c)}
@@ -159,18 +161,22 @@ function windowsFor(accounts,week){
 // since the window opened (floored at a day); 5h windows use the projection's
 // last-hour rate. A window that reset without traffic burns nothing, and an
 // account out of weekly quota adds no 5h capacity: it cannot serve until reset.
+// A thin second bar shows the weighted used share of the pool: used units over
+// all units, where a window that reset without traffic counts as unused.
 function renderPools(rows,week,now){
   pools.replaceChildren();
   const by={},weekOut=a=>(a.balance.windows||[]).some(w=>isWeek(w)&&w.used_percent>=100&&Date.parse(w.resets_at)>now);
   for(const r of rows)if(!r.a.disabled&&(week||!weekOut(r.a)))(by[r.a.provider]=by[r.a.provider]||[]).push(r);
   for(const [provider,list] of Object.entries(by)){
     if(list.length<2)continue;
-    let burn=0,cap=0,weight=0;
+    let burn=0,cap=0,weight=0,usedUnits=0,next=null;
     for(const r of list){
       const wt=r.a.balance.weight||1,hours=r.len/HOUR,proj=r.a.balance.short_projection;
       weight+=wt;cap+=wt*100/hours;
       if(r.end<=now)continue;
       const used=Math.min(100,Math.max(0,r.w.used_percent));
+      usedUnits+=wt*used/100;
+      if(used>0&&(!next||r.end<next.end))next={end:r.end,units:wt*used/100,name:r.a.label||r.a.id};
       burn+=wt*(!week&&proj&&proj.window_seconds===r.w.window_seconds?proj.burn_rate_percent_per_hour:used/Math.max((now-r.start)/HOUR,week?24:.5));
     }
     const ratio=burn/cap,over=ratio>1,unit=week?'day':'hour',per=week?24:1;
@@ -181,12 +187,21 @@ function renderPools(rows,week,now){
     const f=el('div','fill'+(ratio>=2?' full':''));f.style.setProperty('--c',over?'var(--warn)':'var(--ok)');f.style.width=Math.min(ratio,2)*50+'%';
     const mark=el('div','mark');mark.append(el('span',null,'refill'));
     gauge.append(f,mark);
-    gauge.title=week?'Average burn since each weekly window opened':'Burn over the last hour of each 5-hour window';
+    gauge.title=(week?'Average burn since each weekly window opened':'Burn over the last hour of each 5-hour window')+
+      ', as a share of how fast the pool refills (100% at the refill mark = burn equals refill).';
+    const frac=usedUnits/weight,num=v=>v.toFixed(v<10?1:0);
+    const ug=el('div','gauge units'),uf=el('div','fill'+(frac>=1?' full':''));
+    uf.style.setProperty('--c',frac>=1?'var(--bad)':'var(--muted)');uf.style.width=Math.min(1,frac)*100+'%';ug.append(uf);
+    const cap2=el('div','units-cap',Math.round(frac*100)+'% of limits used · ≈'+num(weight-usedUnits)+' of '+weight+' units left'+
+      (next?' · next reset '+when(next.end,week)+' frees ≈'+num(next.units):''));
+    const units=el('div');units.append(gauge,ug,cap2);
+    units.title='Weighted usage: each account counts its weight in units (20x plan = 4, 5x = 1), so a 20x account at 50% uses 2 units.'+
+      (next?' Next reset: '+next.name+' at '+when(next.end,week)+'.':'');
     const big=el('div','left',Math.round(ratio*100)+'%');big.append(el('small',null,'of refill'));
     const pace=el('div','pace',over?Math.round((ratio-1)*100)+'% faster than the pool refills':Math.round((1-ratio)*100)+'% spare capacity');
     pace.style.color=over?'var(--warn)':'var(--ok)';
     st.append(big,el('div','detail','burn ≈'+share(burn)+' of pool per '+unit+' · refill '+share(cap)),pace);
-    row.append(who,gauge,st);pools.append(row);
+    row.append(who,units,st);pools.append(row);
   }
 }
 
