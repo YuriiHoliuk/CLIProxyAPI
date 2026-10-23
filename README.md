@@ -1,5 +1,19 @@
 # CLI Proxy API
 
+## About this fork
+
+This is [YuriiHoliuk's fork](https://github.com/YuriiHoliuk/CLIProxyAPI) of [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). It adds optional native Claude Code forwarding, quota-aware account routing and a local usage dashboard. The upstream multi-provider proxy remains available; the settings below are opt-in.
+
+- **Native Claude requests.** `upstream.claude.proxy-only: true` accepts native Claude Code/Agent SDK requests with locally imported setup-token credentials. It preserves prompts, tools, thinking settings, cache markers and SSE content without the normal translation, prompt injection or cache normalization. It still replaces credentials and machine/account identity, resolves the model, applies configured payload rules and re-signs an existing CCH billing block. Headers and HTTP framing also change, so requests are not byte-for-byte identical to direct Claude Code traffic.
+- **Fewer auxiliary Claude calls.** Proxy-only mode blocks Claude background token refresh, profile lookup, quota probes and management calls using Claude credentials. Client-requested token counts still go upstream, and normal retries/failover can send further attempts. Codex OAuth renewal and other service downloads remain separate; use `--local-model` and disable the downloaded management panel to avoid catalog/panel fetches.
+- **Routing that uses observed capacity.** `routing.strategy: balanced` ranks accounts using remaining quota, reset times, plan weights and active session load. It diverts new sessions when an account is projected to exhaust its five-hour window. Quota observations come from existing responses or local reports and persist across restarts. Missing or stale observations limit these estimates; other account activity can make projections inaccurate. Claude quota errors expose recovery deadlines to the client.
+- **Cache continuity.** With session affinity enabled, healthy conversations stay on their account with a refreshed binding of at least one hour. Disabling subagent inheritance distributes ordinary subagents while forks retain the parent's account. This helps reuse cached prefixes; failover and provider cache policy still determine actual cache hits.
+- **Local visibility.** `/dashboard` reads `/usage` for weekly and five-hour timelines, reset/staleness indicators and pool burn versus refill. It makes no provider quota probes. `/usage` contains account IDs and labels and follows the proxy API-key policy; configure access before exposing it.
+
+See [configuration and request-fidelity details](docs/balanced-proxy-only.md). Proxy-only mode requires setup-token and exit-machine metadata and rejects other client formats. It does not establish provider authorization or guarantee account acceptance.
+
+---
+
 English | [中文](README_CN.md) | [日本語](README_JA.md)
 
 If you want to use CLIProxyAPI on your desktop, we recommend our [EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) desktop client. It provides a graphical configuration UI, automatic updates, system tray integration, and one-click start/stop for the CLIProxyAPI service.
