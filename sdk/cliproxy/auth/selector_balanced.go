@@ -206,8 +206,12 @@ func AccountBalance(a *Auth, now time.Time, maxWeight int64, busy int) BalanceDe
 	share := float64(d.Weight) / float64(busy+1)
 	// The short score is per-weight health (1 = nominal 5h pace for one session).
 	// Weight already scales the long score; scaling here too halved every
-	// weight-1 account's score even with an idle 5h window.
-	d.ShortScore = balanceWindowScore(short, now, 5, 1, 1, 1/float64(busy+1), 1)
+	// weight-1 account's score even with an idle 5h window. Without a 5h limit
+	// it stays neutral: busy sessions already divide the long score.
+	d.ShortScore = 1
+	if hasShortLimit(a) {
+		d.ShortScore = balanceWindowScore(short, now, 5, 1, 1, 1/float64(busy+1), 1)
+	}
 	d.LongScore = balanceWindowScore(long, now, 168, 5, 24, share, float64(maxWeight))
 	d.Score = d.LongScore * math.Min(d.ShortScore/0.5, 1)
 	if short != nil {
@@ -253,9 +257,20 @@ func projectShortWindow(w BalanceWindow, history []BalanceWindow, now time.Time)
 	return p
 }
 
+// hasShortLimit is false when the auth sets "five_hour_limit": false. Such a
+// plan (Claude Max) has only a weekly limit, so short windows (5h, at most a
+// day) are ignored even when an old observation or local report still has one.
+func hasShortLimit(a *Auth) bool {
+	if a == nil {
+		return true
+	}
+	limited, ok := a.Metadata["five_hour_limit"].(bool)
+	return !ok || limited
+}
+
 // AccountBalanceHistory merges runtime and persisted short-window samples.
 func AccountBalanceHistory(a *Auth) []BalanceWindow {
-	if a == nil {
+	if a == nil || !hasShortLimit(a) {
 		return nil
 	}
 	samples := append([]BalanceWindow(nil), a.Quota.BalanceHistory...)
@@ -473,6 +488,9 @@ func AccountBalanceWindows(a *Auth) []BalanceWindow {
 	}
 	out := make([]BalanceWindow, 0, len(windows))
 	for _, w := range windows {
+		if w.WindowSeconds <= 86400 && !hasShortLimit(a) {
+			continue
+		}
 		out = append(out, w)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].WindowSeconds < out[j].WindowSeconds })
