@@ -356,6 +356,38 @@ func TestBalancedFiveHourSpillover(t *testing.T) {
 	}
 }
 
+func TestBalancedIgnoresShortWindowWithoutFiveHourLimit(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	s := &BalancedSelector{Now: func() time.Time { return now }}
+	// A Max plan has only a weekly limit; the Team plan keeps its 5h window.
+	max := balanceAuth("max", 2, 30, now.Add(100*time.Hour), now)
+	max.Metadata = map[string]any{"five_hour_limit": false, "windows": []BalanceWindow{{Name: "5h", UsedPercent: 1, WindowSeconds: 18000, ResetsAt: now.Add(-72 * time.Hour), ObservedAt: now.Add(-73 * time.Hour)}}}
+	withShortWindow(max, 60, now.Add(3*time.Hour), now, map[int]float64{55: 25, 30: 42})
+	team := balanceAuth("team", 1, 30, now.Add(100*time.Hour), now)
+	withShortWindow(team, 10, now.Add(3*time.Hour), now, map[int]float64{55: 9, 30: 9.5})
+
+	if windows := AccountBalanceWindows(max); len(windows) != 1 || windows[0].Name != "7d" {
+		t.Fatalf("max kept a short window: %+v", windows)
+	}
+	if history := AccountBalanceHistory(max); history != nil {
+		t.Fatalf("max kept short history: %+v", history)
+	}
+	d := AccountBalance(max, now, 2, 3)
+	if d.ShortProjection != nil || d.ShortScore != 1 || d.Score != d.LongScore {
+		t.Fatalf("busy max account was cut by a 5h score: %+v", d)
+	}
+	if p := AccountBalance(team, now, 2, 0).ShortProjection; p == nil || p.UsedPercent != 10 {
+		t.Fatalf("team lost its 5h projection: %+v", p)
+	}
+	// Counted, the burning short window would spill max to team.
+	if got := pickID(t, s, max, team); got != "max" {
+		t.Fatalf("max spilled on an ignored 5h window: %s", got)
+	}
+	if BalancedSpilling(s)["max"] {
+		t.Fatal("max reported as spilling")
+	}
+}
+
 func TestBalancedFiveHourSpilloverCascadesAcrossThree(t *testing.T) {
 	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
 	s := &BalancedSelector{Now: func() time.Time { return now }}
