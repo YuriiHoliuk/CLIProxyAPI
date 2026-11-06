@@ -133,6 +133,21 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizer_Synthesize_ExplicitLabelWinsOverEmail(t *testing.T) {
+	tempDir := t.TempDir()
+	data, _ := json.Marshal(map[string]any{"type": "claude", "email": "work-20x", "label": "work Max"})
+	if err := os.WriteFile(filepath.Join(tempDir, "claude-work-20x.json"), data, 0644); err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+	auths, err := NewFileSynthesizer().Synthesize(&SynthesisContext{Config: &config.Config{}, AuthDir: tempDir, Now: time.Now(), IDGenerator: NewStableIDGenerator()})
+	if err != nil || len(auths) != 1 {
+		t.Fatalf("synthesize: %v %d", err, len(auths))
+	}
+	if auths[0].Label != "work Max" || auths[0].ID != "claude-work-20x.json" {
+		t.Fatalf("label %q id %q", auths[0].Label, auths[0].ID)
+	}
+}
+
 func TestFileSynthesizer_Synthesize_LegacyKimiFingerprintProfile(t *testing.T) {
 	tempDir := t.TempDir()
 	authData := map[string]any{

@@ -155,8 +155,11 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	if provider == "" || provider == "gemini-cli" {
 		return nil, nil
 	}
+	// Same precedence as the file token store: an explicit label, then email.
 	label := provider
-	if email, _ := metadata["email"].(string); email != "" {
+	if explicit, _ := metadata["label"].(string); explicit != "" {
+		label = explicit
+	} else if email, _ := metadata["email"].(string); email != "" {
 		label = email
 	}
 	// Use relative path under authDir as ID to stay consistent with the file-based token store.
