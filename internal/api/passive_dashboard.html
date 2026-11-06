@@ -155,7 +155,7 @@ function windowsFor(accounts,week){
   return out;
 }
 
-// A pool is one provider's accounts. Each account adds its weight (×2 = a 20x
+// A pool is one provider's accounts. Each account adds its weight (×2 = a Max
 // plan) to both sides: capacity is a full window per window length, burn is its
 // recent rate. Weekly windows keep no history, so their rate is the average
 // since the window opened (floored at a day); 5h windows use the projection's
@@ -195,7 +195,7 @@ function renderPools(rows,week,now){
     const cap2=el('div','units-cap',Math.round(frac*100)+'% of limits used · ≈'+num(weight-usedUnits)+' of '+weight+' units left'+
       (next?' · next reset '+when(next.end,week)+' frees ≈'+num(next.units):''));
     const units=el('div');units.append(gauge,ug,cap2);
-    units.title='Weighted usage: each account counts its weight in units (20x plan = 2, 5x = 1), so a 20x account at 50% uses 1 unit.'+
+    units.title='Weighted usage: each account counts its weight in units (Max plan = 2, Team = 1), so a Max account at 50% uses 1 unit.'+
       (next?' Next reset: '+next.name+' at '+when(next.end,week)+'.':'');
     const big=el('div','left',Math.round(ratio*100)+'%');big.append(el('small',null,'of refill'));
     const pace=el('div','pace',over?Math.round((ratio-1)*100)+'% faster than the pool refills':Math.round((1-ratio)*100)+'% spare capacity');
