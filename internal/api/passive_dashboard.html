@@ -77,10 +77,14 @@ details{margin-top:18px;color:var(--muted);font-size:13px}
 details input,details button{padding:7px 10px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;font:inherit}
 #error{color:var(--bad);font:12px var(--mono);min-height:1em;margin:8px 0 0}
 
-.cols{display:flex;align-items:flex-end;gap:3px;height:56px}
-.col{flex:1 1 0;max-width:30px;height:100%;position:relative;border-radius:3px;background:var(--track)}
-.col i{position:absolute;left:0;right:0;bottom:0;border-radius:3px;background:var(--c)}
-.span{margin-top:3px;color:var(--faint);font:10.5px var(--mono)}
+.scroll{overflow-x:auto}
+.hist{width:100%;border-collapse:collapse}
+.hist th{color:var(--muted);font:600 12.5px var(--sans);text-align:right;padding:6px 10px 10px;white-space:nowrap}
+.hist td{border-top:1px solid var(--line);padding:9px 10px;text-align:right;vertical-align:top;white-space:nowrap}
+.hist th:first-child,.hist td:first-child{text-align:left;padding-left:0}
+.hist .v{font:650 17px/1.2 var(--sans)}
+.hist .d,.hist .w{color:var(--faint);font:10.5px/1.5 var(--mono)}
+.hist .w{color:var(--muted);font-size:12px}
 .legend[hidden]{display:none}
 #chart>.row:first-child{border-top:0}
 
@@ -98,6 +102,10 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
   .pool .gauge{margin-top:14px}
   .pool .stats{text-align:left}
   .gridlayer{display:none}
+  .hist th{white-space:normal;overflow-wrap:anywhere;font-size:11px;vertical-align:bottom}
+  .hist th,.hist td{padding-left:4px;padding-right:4px}
+  .hist .v{font-size:15px}
+  .hist .d:not(:only-child),.hist .end{display:none}
 }
 @media (prefers-reduced-motion:no-preference){.fill{transition:width .4s ease}}
 </style>
@@ -112,7 +120,7 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
     <div class="tabs" role="tablist">
       <button role="tab" id="tab-week" data-tab="week">Week</button>
       <button role="tab" id="tab-5h" data-tab="5h">5 hours</button>
-      <button role="tab" id="tab-resets" data-tab="resets">Used at reset</button>
+      <button role="tab" id="tab-resets" data-tab="resets">History</button>
     </div>
   </header>
 
@@ -127,10 +135,10 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
     <span><i style="--c:var(--track)"></i>left until reset</span>
   </div>
   <div class="legend" id="legend-resets" hidden>
-    <span>one column per reset; height = share used before it</span>
+    <span>share of the weekly limit used before its reset</span>
     <span><i style="--c:var(--ok)"></i>90% or more</span>
     <span><i style="--c:var(--warn)"></i>60–90%</span>
-    <span><i style="--c:var(--bad)"></i>under 60%: quota expired</span>
+    <span><i style="--c:var(--bad)"></i>under 60%</span>
   </div>
   <p id="error"></p>
 
@@ -220,57 +228,40 @@ function renderPools(rows,week,now){
   }
 }
 
-// "Used at reset": every window's last observed usage before it reset, from
-// /usage/resets. Quota left at a reset expired unused, so a pool's efficiency is
-// its weighted used share: Σ weight×used over Σ weight×100, with weights in
-// units (Max = 2, Team = 1). Weekly windows count over the last 4 weeks, 5h
-// windows over the last 7 days.
-function renderResets(now){
-  const list=(resets&&resets.results)||[];
+// History: per week, how much of each subscription's weekly limit was used
+// before it reset (the last usage observed before the reset; from
+// /usage/resets). A row is the calendar week, Monday to Sunday, the reset fell in.
+function renderResets(){
+  const list=((resets&&resets.results)||[]).filter(isWeek);
+  if(!list.length){chart.append(el('div','empty','No weekly limit has reset since logging started.'));return}
   const acc={};for(const a of (data&&data.accounts)||[])acc[a.id]=a;
-  const kinds=[{week:true,name:'weekly',days:28},{week:false,name:'5-hour',days:7}];
+  const name=id=>{const r=list.find(r=>r.auth_id===id);return acc[id]?.label||r.label||id};
+  const subs=[...new Set(list.map(r=>r.auth_id))].sort((a,b)=>{const pa=list.find(r=>r.auth_id===a).provider,pb=list.find(r=>r.auth_id===b).provider;
+    return (pa+' '+name(a)).localeCompare(pb+' '+name(b))});
+  const monday=t=>{const d=new Date(t);d.setHours(0,0,0,0);d.setDate(d.getDate()-(d.getDay()+6)%7);return +d};
+  const weeks={};
+  for(const r of list){const t=Date.parse(r.resets_at),k=monday(t);((weeks[k]=weeks[k]||{})[r.auth_id]=weeks[k][r.auth_id]||[]).push(r)}
   const color=u=>u>=90?'var(--ok)':u>=60?'var(--warn)':'var(--bad)';
-  const pct=v=>Math.round(v)+'%',num=v=>v.toFixed(v<10?1:0);
-  for(const k of kinds){
-    const by={};
-    for(const r of list)if(isWeek(r)===k.week&&Date.parse(r.resets_at)>now-k.days*DAY)(by[r.provider]=by[r.provider]||[]).push(r);
-    for(const [provider,rs] of Object.entries(by)){
-      let units=0,used=0;for(const r of rs){const w=r.weight||1;units+=w;used+=w*Math.min(100,r.used_percent)/100}
-      const eff=used/units*100,row=el('div','pool'),who=el('div','who'),g=el('div'),st=el('div','stats');
-      const meta=el('div','meta');meta.append(el('span','badge',provider),k.name+' · last '+k.days+' days');
-      who.append(el('div','name',provider+' pool'),meta);
-      const gauge=el('div','gauge'),f=el('div','fill'+(eff>=100?' full':''));f.style.setProperty('--c',color(eff));f.style.width=Math.min(100,eff)+'%';gauge.append(f);
-      gauge.title='Weighted share of each '+k.name+' window used before it reset (Max = 2 units, Team = 1).';
-      g.append(gauge,el('div','units-cap',rs.length+' resets · '+num(used)+' of '+num(units)+' units used · ≈'+num(units-used)+' expired unused'));
-      const big=el('div','left',pct(eff));big.append(el('small',null,'used before reset'));
-      st.append(big);row.append(who,g,st);pools.append(row);
+  const short=t=>new Date(t).toLocaleDateString([], {day:'numeric',month:'short'});
+  const table=el('table','hist'),head=el('tr');
+  head.append(el('th',null,'Week'));for(const id of subs)head.append(el('th',null,name(id)));
+  table.append(el('thead'));table.firstChild.append(head);
+  const body=el('tbody');
+  for(const k of Object.keys(weeks).map(Number).sort((a,b)=>b-a)){
+    const tr=el('tr'),wk=el('td');const w=el('div','w',short(k));w.append(el('span','end',' – '+short(k+6*DAY)));wk.append(w);tr.append(wk);
+    for(const id of subs){
+      const td=el('td'),rs=(weeks[k][id]||[]).sort((a,b)=>Date.parse(a.resets_at)-Date.parse(b.resets_at));
+      if(!rs.length)td.append(el('div','d','—'));
+      for(const r of rs){
+        const u=Math.min(100,Math.max(0,r.used_percent)),v=el('div','v',Math.round(u)+'%');v.style.color=color(u);
+        td.append(v,el('div','d','reset '+when(Date.parse(r.resets_at),true)));
+        td.title=name(id)+': '+u.toFixed(1)+'% of the weekly limit used before the reset · last reported '+new Date(r.observed_at).toLocaleString();
+      }
+      tr.append(td);
     }
+    body.append(tr);
   }
-  if(!list.length){chart.append(el('div','empty','No window has reset since logging started.'));return}
-  const groups={};
-  for(const r of list){const k=r.auth_id+'|'+(isWeek(r)?'w':'s');(groups[k]=groups[k]||[]).push(r)}
-  const keys=Object.keys(groups).sort((a,b)=>{const ga=groups[a][0],gb=groups[b][0];
-    return (isWeek(gb)-isWeek(ga))||(ga.provider+' '+(acc[ga.auth_id]?.label||ga.label||ga.auth_id)).localeCompare(gb.provider+' '+(acc[gb.auth_id]?.label||gb.label||gb.auth_id))});
-  for(const k of keys){
-    const week=isWeek(groups[k][0]),rs=groups[k].filter(r=>week||Date.parse(r.resets_at)>now-7*DAY);
-    if(!rs.length)continue;
-    const r0=rs[rs.length-1],a=acc[r0.auth_id],row=el('div','row'),who=el('div','who'),ln=el('div','lane'),st=el('div','stats');
-    const meta=el('div','meta');meta.append(el('span','badge',r0.provider),el('span','badge',week?'weekly':'5h'));
-    if((r0.weight||1)>1)meta.append(el('span','badge','×'+r0.weight));
-    who.append(el('div','name',a?.label||r0.label||r0.auth_id),meta);
-    const cols=el('div','cols');
-    for(const r of rs){
-      const u=Math.min(100,Math.max(0,r.used_percent)),c=el('div','col'),i=el('i');
-      i.style.height=Math.max(u,2)+'%';i.style.setProperty('--c',color(u));c.append(i);
-      c.title='reset '+dated(Date.parse(r.resets_at),false)+' · '+u.toFixed(1)+'% used · last reported '+new Date(r.observed_at).toLocaleString();
-      cols.append(c);
-    }
-    ln.append(cols,el('div','span',dated(Date.parse(rs[0].resets_at),week)+(rs.length>1?' → '+dated(Date.parse(r0.resets_at),week):'')));
-    const avg=rs.reduce((s,r)=>s+Math.min(100,r.used_percent),0)/rs.length;
-    const big=el('div','left',pct(avg));big.append(el('small',null,'avg used'));
-    const last=el('div','pace','last '+pct(r0.used_percent)+' · '+rs.length+' reset'+(rs.length>1?'s':''));last.style.color=color(r0.used_percent);
-    st.append(big,last);row.append(who,ln,st);chart.append(row);
-  }
+  table.append(body);const wrap=el('div','scroll');wrap.append(table);chart.append(wrap);
 }
 
 function render(){
@@ -278,7 +269,7 @@ function render(){
   chart.replaceChildren();pools.replaceChildren();
   document.getElementById('legend-windows').hidden=tab==='resets';
   document.getElementById('legend-resets').hidden=tab!=='resets';
-  if(tab==='resets'){renderResets(Date.now());return}
+  if(tab==='resets'){renderResets();return}
   if(!data)return;
   const week=tab==='week',now=Date.now(),rows=windowsFor(data.accounts,week);
   renderPools(rows,week,now);
@@ -371,7 +362,7 @@ let resizing;window.addEventListener('resize',()=>{clearTimeout(resizing);resizi
 async function refresh(){
   try{
     const headers=key?{Authorization:'Bearer '+key}:{};
-    const [r,rr]=await Promise.all([fetch('/usage',{headers}),fetch('/usage/resets',{headers})]);
+    const [r,rr]=await Promise.all([fetch('/usage',{headers}),fetch('/usage/resets?days=3650',{headers})]);
     if(!r.ok)throw Error('Usage API returned '+r.status);
     data=await r.json();
     // An ingress that does not route /usage/resets yet only loses this tab.

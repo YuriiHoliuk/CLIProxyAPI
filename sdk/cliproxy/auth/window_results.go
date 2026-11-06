@@ -74,15 +74,16 @@ func OpenWindowResultLog(path string) (*WindowResultLog, error) {
 	return l, nil
 }
 
-// Record stores every window of a whose reset has passed and that is not yet
-// in the log. Call it before a new observation replaces those windows.
+// Record stores every weekly (longer than a day) window of a whose reset has
+// passed and that is not yet in the log. Call it before a new observation
+// replaces those windows.
 func (l *WindowResultLog) Record(a *Auth, now time.Time) {
 	if l == nil || a == nil {
 		return
 	}
 	var fresh []WindowResult
 	for _, w := range AccountBalanceWindows(a) {
-		if w.ResetsAt.IsZero() || w.ResetsAt.After(now) {
+		if w.WindowSeconds <= 86400 || w.ResetsAt.IsZero() || w.ResetsAt.After(now) {
 			continue
 		}
 		fresh = append(fresh, WindowResult{AuthID: a.ID, Label: a.Label, Provider: a.Provider, Weight: authWeight(a), Name: w.Name, WindowSeconds: w.WindowSeconds, ResetsAt: w.ResetsAt.UTC(), UsedPercent: w.UsedPercent, ObservedAt: w.ObservedAt, Source: w.Source})

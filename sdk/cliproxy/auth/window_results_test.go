@@ -20,12 +20,13 @@ func TestWindowResultLogRecordsResetWindowsOnce(t *testing.T) {
 	}
 	a := &Auth{ID: "claude-work-5x.json", Label: "work Team", Provider: "claude", Metadata: map[string]any{"windows": []BalanceWindow{
 		{Name: "5h", UsedPercent: 92, WindowSeconds: 18000, ResetsAt: now.Add(-time.Hour), ObservedAt: now.Add(-90 * time.Minute)},
-		{Name: "7d", UsedPercent: 40, WindowSeconds: 604800, ResetsAt: now.Add(48 * time.Hour), ObservedAt: now.Add(-90 * time.Minute)},
+		{Name: "7d", UsedPercent: 40, WindowSeconds: 604800, ResetsAt: now.Add(-time.Hour), ObservedAt: now.Add(-90 * time.Minute)},
 	}}}
 	results.Record(a, now)
 	results.Record(a, now.Add(time.Minute))
 	got := results.Results(time.Time{})
-	if len(got) != 1 || got[0].Name != "5h" || got[0].UsedPercent != 92 || got[0].Label != "work Team" || got[0].Weight != 1 {
+	// Only weekly windows are kept; the reset 5h window is skipped.
+	if len(got) != 1 || got[0].Name != "7d" || got[0].UsedPercent != 40 || got[0].Label != "work Team" || got[0].Weight != 1 {
 		t.Fatalf("results: %+v", got)
 	}
 	reopened, err := OpenWindowResultLog(path)
