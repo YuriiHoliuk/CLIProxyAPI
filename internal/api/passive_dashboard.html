@@ -77,6 +77,13 @@ details{margin-top:18px;color:var(--muted);font-size:13px}
 details input,details button{padding:7px 10px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;font:inherit}
 #error{color:var(--bad);font:12px var(--mono);min-height:1em;margin:8px 0 0}
 
+.cols{display:flex;align-items:flex-end;gap:3px;height:56px}
+.col{flex:1 1 0;max-width:30px;height:100%;position:relative;border-radius:3px;background:var(--track)}
+.col i{position:absolute;left:0;right:0;bottom:0;border-radius:3px;background:var(--c)}
+.span{margin-top:3px;color:var(--faint);font:10.5px var(--mono)}
+.legend[hidden]{display:none}
+#chart>.row:first-child{border-top:0}
+
 @media (max-width:760px){
   .wrap{padding:22px 12px 40px}
   .card{padding:12px 12px 6px}
@@ -105,18 +112,25 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
     <div class="tabs" role="tablist">
       <button role="tab" id="tab-week" data-tab="week">Week</button>
       <button role="tab" id="tab-5h" data-tab="5h">5 hours</button>
+      <button role="tab" id="tab-resets" data-tab="resets">Used at reset</button>
     </div>
   </header>
 
   <div class="pools" id="pools"></div>
   <div class="card"><div class="chart" id="chart"></div></div>
 
-  <div class="legend">
+  <div class="legend" id="legend-windows">
     <span><i class="nl"></i>now: a bar's even-pace point</span>
     <span><i style="--c:var(--ok)"></i>used, behind pace</span>
     <span><i style="--c:var(--warn)"></i>used, ahead of pace</span>
     <span><i style="--c:var(--bad)"></i>exhausted</span>
     <span><i style="--c:var(--track)"></i>left until reset</span>
+  </div>
+  <div class="legend" id="legend-resets" hidden>
+    <span>one column per reset; height = share used before it</span>
+    <span><i style="--c:var(--ok)"></i>90% or more</span>
+    <span><i style="--c:var(--warn)"></i>60–90%</span>
+    <span><i style="--c:var(--bad)"></i>under 60%: quota expired</span>
   </div>
   <p id="error"></p>
 
@@ -132,7 +146,7 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
 // refills. Data comes from /usage (local snapshots only, no provider calls).
 const HOUR=3600e3,DAY=24*HOUR;
 const chart=document.getElementById('chart'),pools=document.getElementById('pools'),state=document.getElementById('state'),error=document.getElementById('error');
-let key=sessionStorage.getItem('proxy-key')||'',data=null,tab=location.hash==='#5h'?'5h':'week';
+let key=sessionStorage.getItem('proxy-key')||'',data=null,resets=null,tab=['#5h','#resets'].includes(location.hash)?location.hash.slice(1):'week';
 document.getElementById('key').value=key;
 document.getElementById('save').onclick=()=>{key=document.getElementById('key').value;sessionStorage.setItem('proxy-key',key);refresh()};
 for(const b of document.querySelectorAll('.tabs button'))b.onclick=()=>{tab=b.dataset.tab;history.replaceState(null,'','#'+tab);render()};
@@ -142,6 +156,7 @@ const fmtDur=ms=>{ms=Math.max(0,ms);const d=Math.floor(ms/DAY),h=Math.floor(ms%D
 const day=t=>new Date(t).toLocaleDateString([], {weekday:'short'});
 const clock=t=>new Date(t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const when=(t,week)=>week?day(t)+' '+clock(t):clock(t);
+const dated=(t,week)=>new Date(t).toLocaleDateString([], {weekday:'short',day:'numeric',month:'short'})+(week?'':' '+clock(t));
 const ago=t=>new Date(t).toDateString()===new Date().toDateString()?clock(t):when(t,true);
 const isWeek=w=>w.window_seconds>DAY/1000;
 
@@ -205,9 +220,65 @@ function renderPools(rows,week,now){
   }
 }
 
+// "Used at reset": every window's last observed usage before it reset, from
+// /usage/resets. Quota left at a reset expired unused, so a pool's efficiency is
+// its weighted used share: Σ weight×used over Σ weight×100, with weights in
+// units (Max = 2, Team = 1). Weekly windows count over the last 4 weeks, 5h
+// windows over the last 7 days.
+function renderResets(now){
+  const list=(resets&&resets.results)||[];
+  const acc={};for(const a of (data&&data.accounts)||[])acc[a.id]=a;
+  const kinds=[{week:true,name:'weekly',days:28},{week:false,name:'5-hour',days:7}];
+  const color=u=>u>=90?'var(--ok)':u>=60?'var(--warn)':'var(--bad)';
+  const pct=v=>Math.round(v)+'%',num=v=>v.toFixed(v<10?1:0);
+  for(const k of kinds){
+    const by={};
+    for(const r of list)if(isWeek(r)===k.week&&Date.parse(r.resets_at)>now-k.days*DAY)(by[r.provider]=by[r.provider]||[]).push(r);
+    for(const [provider,rs] of Object.entries(by)){
+      let units=0,used=0;for(const r of rs){const w=r.weight||1;units+=w;used+=w*Math.min(100,r.used_percent)/100}
+      const eff=used/units*100,row=el('div','pool'),who=el('div','who'),g=el('div'),st=el('div','stats');
+      const meta=el('div','meta');meta.append(el('span','badge',provider),k.name+' · last '+k.days+' days');
+      who.append(el('div','name',provider+' pool'),meta);
+      const gauge=el('div','gauge'),f=el('div','fill'+(eff>=100?' full':''));f.style.setProperty('--c',color(eff));f.style.width=Math.min(100,eff)+'%';gauge.append(f);
+      gauge.title='Weighted share of each '+k.name+' window used before it reset (Max = 2 units, Team = 1).';
+      g.append(gauge,el('div','units-cap',rs.length+' resets · '+num(used)+' of '+num(units)+' units used · ≈'+num(units-used)+' expired unused'));
+      const big=el('div','left',pct(eff));big.append(el('small',null,'used before reset'));
+      st.append(big);row.append(who,g,st);pools.append(row);
+    }
+  }
+  if(!list.length){chart.append(el('div','empty','No window has reset since logging started.'));return}
+  const groups={};
+  for(const r of list){const k=r.auth_id+'|'+(isWeek(r)?'w':'s');(groups[k]=groups[k]||[]).push(r)}
+  const keys=Object.keys(groups).sort((a,b)=>{const ga=groups[a][0],gb=groups[b][0];
+    return (isWeek(gb)-isWeek(ga))||(ga.provider+' '+(acc[ga.auth_id]?.label||ga.label||ga.auth_id)).localeCompare(gb.provider+' '+(acc[gb.auth_id]?.label||gb.label||gb.auth_id))});
+  for(const k of keys){
+    const week=isWeek(groups[k][0]),rs=groups[k].filter(r=>week||Date.parse(r.resets_at)>now-7*DAY);
+    if(!rs.length)continue;
+    const r0=rs[rs.length-1],a=acc[r0.auth_id],row=el('div','row'),who=el('div','who'),ln=el('div','lane'),st=el('div','stats');
+    const meta=el('div','meta');meta.append(el('span','badge',r0.provider),el('span','badge',week?'weekly':'5h'));
+    if((r0.weight||1)>1)meta.append(el('span','badge','×'+r0.weight));
+    who.append(el('div','name',a?.label||r0.label||r0.auth_id),meta);
+    const cols=el('div','cols');
+    for(const r of rs){
+      const u=Math.min(100,Math.max(0,r.used_percent)),c=el('div','col'),i=el('i');
+      i.style.height=Math.max(u,2)+'%';i.style.setProperty('--c',color(u));c.append(i);
+      c.title='reset '+dated(Date.parse(r.resets_at),false)+' · '+u.toFixed(1)+'% used · last reported '+new Date(r.observed_at).toLocaleString();
+      cols.append(c);
+    }
+    ln.append(cols,el('div','span',dated(Date.parse(rs[0].resets_at),week)+(rs.length>1?' → '+dated(Date.parse(r0.resets_at),week):'')));
+    const avg=rs.reduce((s,r)=>s+Math.min(100,r.used_percent),0)/rs.length;
+    const big=el('div','left',pct(avg));big.append(el('small',null,'avg used'));
+    const last=el('div','pace','last '+pct(r0.used_percent)+' · '+rs.length+' reset'+(rs.length>1?'s':''));last.style.color=color(r0.used_percent);
+    st.append(big,last);row.append(who,ln,st);chart.append(row);
+  }
+}
+
 function render(){
   for(const b of document.querySelectorAll('.tabs button'))b.setAttribute('aria-selected',b.dataset.tab===tab);
   chart.replaceChildren();pools.replaceChildren();
+  document.getElementById('legend-windows').hidden=tab==='resets';
+  document.getElementById('legend-resets').hidden=tab!=='resets';
+  if(tab==='resets'){renderResets(Date.now());return}
   if(!data)return;
   const week=tab==='week',now=Date.now(),rows=windowsFor(data.accounts,week);
   renderPools(rows,week,now);
@@ -299,9 +370,12 @@ let resizing;window.addEventListener('resize',()=>{clearTimeout(resizing);resizi
 
 async function refresh(){
   try{
-    const r=await fetch('/usage',{headers:key?{Authorization:'Bearer '+key}:{}});
+    const headers=key?{Authorization:'Bearer '+key}:{};
+    const [r,rr]=await Promise.all([fetch('/usage',{headers}),fetch('/usage/resets',{headers})]);
     if(!r.ok)throw Error('Usage API returned '+r.status);
     data=await r.json();
+    // An ingress that does not route /usage/resets yet only loses this tab.
+    resets=rr.ok&&(rr.headers.get('content-type')||'').includes('json')?await rr.json():null;
     data.accounts.sort((a,b)=>(a.provider+' '+(a.label||a.id)).localeCompare(b.provider+' '+(b.label||b.id)));
     state.textContent=data.strategy+' · session affinity '+(data.session_affinity?'on':'off')+' · updated '+clock(Date.parse(data.observed_at));
     error.textContent='';render();

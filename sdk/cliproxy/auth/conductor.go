@@ -157,16 +157,18 @@ type Manager struct {
 	selector                  Selector
 	hook                      Hook
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
-	mu                        sync.RWMutex
-	selectorMu                sync.Mutex
-	configCooldownMu          sync.Mutex
-	syncSchedulerMu           sync.Mutex
-	structuralEpoch           atomic.Uint64
-	syncedVersion             atomic.Uint64
-	auths                     map[string]*Auth
-	authEpochs                map[string]uint64
-	authChangeWatchers        map[string]map[chan struct{}]struct{}
-	scheduler                 *authScheduler
+	// windowResults records each quota window's final usage when it resets.
+	windowResults      atomic.Pointer[WindowResultLog]
+	mu                 sync.RWMutex
+	selectorMu         sync.Mutex
+	configCooldownMu   sync.Mutex
+	syncSchedulerMu    sync.Mutex
+	structuralEpoch    atomic.Uint64
+	syncedVersion      atomic.Uint64
+	auths              map[string]*Auth
+	authEpochs         map[string]uint64
+	authChangeWatchers map[string]map[chan struct{}]struct{}
+	scheduler          *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.

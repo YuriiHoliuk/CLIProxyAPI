@@ -211,6 +211,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
+	if authManager != nil && authManager.WindowResultLog() == nil {
+		if results, errOpen := auth.OpenWindowResultLog(windowResultLogPath(configFilePath)); errOpen != nil {
+			log.WithError(errOpen).Warn("quota window reset log disabled")
+		} else {
+			authManager.SetWindowResultLog(results)
+		}
+	}
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)

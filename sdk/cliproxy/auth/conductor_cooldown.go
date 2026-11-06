@@ -1033,6 +1033,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.UpdatedAt = now
 
 		if !result.SkipQuotaObservation {
+			// The observation below replaces windows that already reset; keep
+			// their final usage first.
+			m.windowResults.Load().Record(auth, now)
 			if auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now) {
 				if auth.Metadata != nil {
 					// The existing credential store already saves metadata below. Keep
