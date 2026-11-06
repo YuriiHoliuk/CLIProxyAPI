@@ -55,6 +55,7 @@ func (s *Server) setupRoutes() {
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	s.engine.GET("/dashboard", s.passiveDashboard)
 	s.engine.GET("/usage", AuthMiddleware(s.accessManager), s.passiveUsage)
+	s.engine.GET("/usage/resets", AuthMiddleware(s.accessManager), s.passiveUsageResets)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
