@@ -199,6 +199,32 @@ func TestBalancedPartialResponsesKeepMeasuredWindows(t *testing.T) {
 	}
 }
 
+func TestBalancedWindowNameReportedWithNewDurationDropsOldOne(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	codex := func(used, minutes string) http.Header {
+		return http.Header{
+			"X-Codex-Primary-Used-Percent":        []string{used},
+			"X-Codex-Primary-Window-Minutes":      []string{minutes},
+			"X-Codex-Primary-Reset-After-Seconds": []string{"3600"},
+		}
+	}
+	q := QuotaState{}
+	q.ObserveResponseHeadersForProvider("codex", codex("30", "10080"), now.Add(-24*time.Hour))
+	q.ObserveResponseHeadersForProvider("codex", codex("70", "43200"), now)
+	if len(q.BalanceWindows) != 1 || q.BalanceWindows[0].WindowSeconds != 2592000 || q.BalanceWindows[0].UsedPercent != 70 {
+		t.Fatalf("superseded primary window kept: %+v", q.BalanceWindows)
+	}
+
+	// Windows already saved to metadata before the fix collapse on read.
+	a := &Auth{ID: "codex", Provider: "codex", Metadata: map[string]any{"windows": []BalanceWindow{
+		{Name: "primary", UsedPercent: 30, WindowSeconds: 604800, ResetsAt: now.Add(48 * time.Hour), ObservedAt: now.Add(-24 * time.Hour), Source: "response"},
+		{Name: "primary", UsedPercent: 70, WindowSeconds: 2592000, ResetsAt: now.Add(29 * 24 * time.Hour), ObservedAt: now, Source: "response"},
+	}}}
+	if got := AccountBalanceWindows(a); len(got) != 1 || got[0].WindowSeconds != 2592000 {
+		t.Fatalf("metadata windows: %+v", got)
+	}
+}
+
 func TestBalancedSameSessionConcurrentLoad(t *testing.T) {
 	m := NewManager(nil, NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &BalancedSelector{}}), nil)
 	m.RegisterExecutor(&aliasRoutingExecutor{id: "gemini"})
