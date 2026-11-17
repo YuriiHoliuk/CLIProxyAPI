@@ -486,9 +486,21 @@ func AccountBalanceWindows(a *Auth) []BalanceWindow {
 			}
 		}
 	}
+	// A window name is one slot per source: when a newer observation reports
+	// that slot with another duration (a Codex plan switching its primary
+	// window from 7 days to 30), the older duration no longer exists.
+	newest := make(map[string]time.Time, len(windows))
+	for _, w := range windows {
+		if k := w.Source + "/" + w.Name; w.ObservedAt.After(newest[k]) {
+			newest[k] = w.ObservedAt
+		}
+	}
 	out := make([]BalanceWindow, 0, len(windows))
 	for _, w := range windows {
 		if w.WindowSeconds <= 86400 && !hasShortLimit(a) {
+			continue
+		}
+		if w.Name != "" && newest[w.Source+"/"+w.Name].After(w.ObservedAt) {
 			continue
 		}
 		out = append(out, w)
