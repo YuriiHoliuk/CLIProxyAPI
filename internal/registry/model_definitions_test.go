@@ -10,12 +10,14 @@ func TestCodexConfigurationUpdateCapability(t *testing.T) {
 	for _, tier := range []struct {
 		name    string
 		models  func() []*ModelInfo
+		legacy  []string
 		capable []string
 	}{
+		// The free plan has no gpt-5.5: ChatGPT answers model_not_found for it.
 		{name: "free", models: GetCodexFreeModels, capable: []string{"gpt-6-luna"}},
-		{name: "team", models: GetCodexTeamModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
-		{name: "plus", models: GetCodexPlusModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
-		{name: "pro", models: GetCodexProModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
+		{name: "team", models: GetCodexTeamModels, legacy: []string{"gpt-5.5"}, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
+		{name: "plus", models: GetCodexPlusModels, legacy: []string{"gpt-5.5"}, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
+		{name: "pro", models: GetCodexProModels, legacy: []string{"gpt-5.5"}, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
 	} {
 		t.Run(tier.name, func(t *testing.T) {
 			byID := make(map[string]*ModelInfo)
@@ -24,7 +26,7 @@ func TestCodexConfigurationUpdateCapability(t *testing.T) {
 					byID[info.ID] = info
 				}
 			}
-			for _, id := range append([]string{"gpt-5.5"}, tier.capable...) {
+			for _, id := range append(append([]string{}, tier.legacy...), tier.capable...) {
 				info := byID[id]
 				if info == nil {
 					t.Errorf("%s is missing", id)
@@ -365,5 +367,24 @@ func TestGetDevinModelsFallback(t *testing.T) {
 	}
 	if info.DisplayName != "SWE-2" {
 		t.Errorf("info.DisplayName = %q, want SWE-2", info.DisplayName)
+	}
+}
+
+// TestCodexFreeModelsServedByPlan pins the free tier to what ChatGPT serves a free
+// account (backend-api/codex/models, 2026-11-17): a listed model the plan refuses makes
+// every client that trusts /v1/models fail with model_not_found.
+func TestCodexFreeModelsServedByPlan(t *testing.T) {
+	want := map[string]bool{"gpt-6-luna": true, "gpt-5.6-terra": true, "gpt-5.6-luna": true, "codex-auto-review": true}
+	for _, info := range GetCodexFreeModels() {
+		if info == nil || strings.HasPrefix(info.ID, "gpt-image") {
+			continue
+		}
+		if !want[info.ID] {
+			t.Errorf("free tier lists %s, which a free account cannot use", info.ID)
+		}
+		delete(want, info.ID)
+	}
+	for id := range want {
+		t.Errorf("free tier misses %s, which a free account can use", id)
 	}
 }
