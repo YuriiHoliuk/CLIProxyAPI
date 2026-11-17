@@ -120,6 +120,7 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
     <div class="tabs" role="tablist">
       <button role="tab" id="tab-week" data-tab="week">Week</button>
       <button role="tab" id="tab-5h" data-tab="5h">5 hours</button>
+      <button role="tab" id="tab-month" data-tab="month" hidden>Month</button>
       <button role="tab" id="tab-resets" data-tab="resets">History</button>
     </div>
   </header>
@@ -154,7 +155,7 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
 // refills. Data comes from /usage (local snapshots only, no provider calls).
 const HOUR=3600e3,DAY=24*HOUR;
 const chart=document.getElementById('chart'),pools=document.getElementById('pools'),state=document.getElementById('state'),error=document.getElementById('error');
-let key=sessionStorage.getItem('proxy-key')||'',data=null,resets=null,tab=['#5h','#resets'].includes(location.hash)?location.hash.slice(1):'week';
+let key=sessionStorage.getItem('proxy-key')||'',data=null,resets=null,tab=['#5h','#month','#resets'].includes(location.hash)?location.hash.slice(1):'week';
 document.getElementById('key').value=key;
 document.getElementById('save').onclick=()=>{key=document.getElementById('key').value;sessionStorage.setItem('proxy-key',key);refresh()};
 for(const b of document.querySelectorAll('.tabs button'))b.onclick=()=>{tab=b.dataset.tab;history.replaceState(null,'','#'+tab);render()};
@@ -167,11 +168,14 @@ const when=(t,week)=>week?day(t)+' '+clock(t):clock(t);
 const dated=(t,week)=>new Date(t).toLocaleDateString([], {weekday:'short',day:'numeric',month:'short'})+(week?'':' '+clock(t));
 const ago=t=>new Date(t).toDateString()===new Date().toDateString()?clock(t):when(t,true);
 const isWeek=w=>w.window_seconds>DAY/1000;
+// Each timeline tab holds one window length: a 30-day window on the Week axis
+// would stretch it to a month and shrink every weekly bar.
+const kind=w=>w.window_seconds<=DAY/1000?'5h':w.window_seconds<=8*DAY/1000?'week':'month';
 
-function windowsFor(accounts,week){
+function windowsFor(accounts,tab){
   const out=[];
   for(const a of accounts)for(const w of a.balance.windows||[]){
-    if(!w.window_seconds||!w.resets_at||isWeek(w)!==week)continue;
+    if(!w.window_seconds||!w.resets_at||kind(w)!==tab)continue;
     const end=Date.parse(w.resets_at),len=w.window_seconds*1000;
     out.push({a,w,start:end-len,end,len});
   }
@@ -232,7 +236,7 @@ function renderPools(rows,week,now){
 // before it reset (the last usage observed before the reset; from
 // /usage/resets). A row is the calendar week, Monday to Sunday, the reset fell in.
 function renderResets(){
-  const list=((resets&&resets.results)||[]).filter(isWeek);
+  const list=((resets&&resets.results)||[]).filter(w=>kind(w)==='week');
   if(!list.length){chart.append(el('div','empty','No weekly limit has reset since logging started.'));return}
   const acc={};for(const a of (data&&data.accounts)||[])acc[a.id]=a;
   const name=id=>{const r=list.find(r=>r.auth_id===id);return acc[id]?.label||r.label||id};
@@ -265,15 +269,18 @@ function renderResets(){
 }
 
 function render(){
+  const month=document.getElementById('tab-month');
+  month.hidden=!(data&&windowsFor(data.accounts,'month').length);
+  if(tab==='month'&&data&&month.hidden)tab='week';
   for(const b of document.querySelectorAll('.tabs button'))b.setAttribute('aria-selected',b.dataset.tab===tab);
   chart.replaceChildren();pools.replaceChildren();
   document.getElementById('legend-windows').hidden=tab==='resets';
   document.getElementById('legend-resets').hidden=tab!=='resets';
   if(tab==='resets'){renderResets();return}
   if(!data)return;
-  const week=tab==='week',now=Date.now(),rows=windowsFor(data.accounts,week);
+  const week=tab!=='5h',now=Date.now(),rows=windowsFor(data.accounts,tab);
   renderPools(rows,week,now);
-  if(!rows.length){chart.append(el('div','empty','No '+(week?'weekly':'5-hour')+' window observed yet.'));return}
+  if(!rows.length){chart.append(el('div','empty','No '+({week:'weekly',month:'monthly'}[tab]||'5-hour')+' window observed yet.'));return}
 
   // Domain: every live bar plus "now", snapped to whole days (week) or hours (5h).
   // Windows that already reset stay out of it: one idle account would otherwise
