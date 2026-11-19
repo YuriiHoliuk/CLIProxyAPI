@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Proxy usage</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Crect x='6' y='7' width='20' height='4' rx='2' fill='%231f2a38'/%3E%3Crect x='6' y='7' width='15' height='4' rx='2' fill='%234cc38a'/%3E%3Crect x='6' y='14' width='20' height='4' rx='2' fill='%231f2a38'/%3E%3Crect x='6' y='14' width='9' height='4' rx='2' fill='%234cc38a'/%3E%3Crect x='6' y='21' width='20' height='4' rx='2' fill='%231f2a38'/%3E%3Crect x='6' y='21' width='18' height='4' rx='2' fill='%23f0b354'/%3E%3Crect x='17' y='4' width='2' height='24' rx='1' fill='%237cc4ff'/%3E%3C/svg%3E">
 <style>
 :root{
   --bg:#0d1117;--panel:#131922;--panel2:#18202b;--line:#253041;--grid:#1c2532;
@@ -121,6 +122,7 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
       <button role="tab" id="tab-week" data-tab="week">Week</button>
       <button role="tab" id="tab-5h" data-tab="5h">5 hours</button>
       <button role="tab" id="tab-month" data-tab="month" hidden>Month</button>
+      <button role="tab" id="tab-fable" data-tab="fable" hidden>Fable</button>
       <button role="tab" id="tab-resets" data-tab="resets">History</button>
     </div>
   </header>
@@ -155,7 +157,7 @@ details input,details button{padding:7px 10px;background:var(--panel2);color:var
 // refills. Data comes from /usage (local snapshots only, no provider calls).
 const HOUR=3600e3,DAY=24*HOUR;
 const chart=document.getElementById('chart'),pools=document.getElementById('pools'),state=document.getElementById('state'),error=document.getElementById('error');
-let key=sessionStorage.getItem('proxy-key')||'',data=null,resets=null,tab=['#5h','#month','#resets'].includes(location.hash)?location.hash.slice(1):'week';
+let key=sessionStorage.getItem('proxy-key')||'',data=null,resets=null,tab=['#5h','#month','#fable','#resets'].includes(location.hash)?location.hash.slice(1):'week';
 document.getElementById('key').value=key;
 document.getElementById('save').onclick=()=>{key=document.getElementById('key').value;sessionStorage.setItem('proxy-key',key);refresh()};
 for(const b of document.querySelectorAll('.tabs button'))b.onclick=()=>{tab=b.dataset.tab;history.replaceState(null,'','#'+tab);render()};
@@ -169,8 +171,9 @@ const dated=(t,week)=>new Date(t).toLocaleDateString([], {weekday:'short',day:'n
 const ago=t=>new Date(t).toDateString()===new Date().toDateString()?clock(t):when(t,true);
 const isWeek=w=>w.window_seconds>DAY/1000;
 // Each timeline tab holds one window length: a 30-day window on the Week axis
-// would stretch it to a month and shrink every weekly bar.
-const kind=w=>w.window_seconds<=DAY/1000?'5h':w.window_seconds<=8*DAY/1000?'week':'month';
+// would stretch it to a month and shrink every weekly bar. A model-scoped
+// window (Fable's own weekly limit) gets its own tab.
+const kind=w=>w.model?w.model:w.window_seconds<=DAY/1000?'5h':w.window_seconds<=8*DAY/1000?'week':'month';
 
 function windowsFor(accounts,tab){
   const out=[];
@@ -192,7 +195,7 @@ function windowsFor(accounts,tab){
 // all units, where a window that reset without traffic counts as unused.
 function renderPools(rows,week,now){
   pools.replaceChildren();
-  const by={},weekOut=a=>(a.balance.windows||[]).some(w=>isWeek(w)&&w.used_percent>=100&&Date.parse(w.resets_at)>now);
+  const by={},weekOut=a=>(a.balance.windows||[]).some(w=>!w.model&&isWeek(w)&&w.used_percent>=100&&Date.parse(w.resets_at)>now);
   for(const r of rows)if(!r.a.disabled&&(week||!weekOut(r.a)))(by[r.a.provider]=by[r.a.provider]||[]).push(r);
   for(const [provider,list] of Object.entries(by)){
     if(list.length<2)continue;
@@ -269,9 +272,11 @@ function renderResets(){
 }
 
 function render(){
-  const month=document.getElementById('tab-month');
-  month.hidden=!(data&&windowsFor(data.accounts,'month').length);
-  if(tab==='month'&&data&&month.hidden)tab='week';
+  for(const t of ['month','fable']){
+    const b=document.getElementById('tab-'+t);
+    b.hidden=!(data&&windowsFor(data.accounts,t).length);
+    if(tab===t&&data&&b.hidden)tab='week';
+  }
   for(const b of document.querySelectorAll('.tabs button'))b.setAttribute('aria-selected',b.dataset.tab===tab);
   chart.replaceChildren();pools.replaceChildren();
   document.getElementById('legend-windows').hidden=tab==='resets';
@@ -280,7 +285,7 @@ function render(){
   if(!data)return;
   const week=tab!=='5h',now=Date.now(),rows=windowsFor(data.accounts,tab);
   renderPools(rows,week,now);
-  if(!rows.length){chart.append(el('div','empty','No '+({week:'weekly',month:'monthly'}[tab]||'5-hour')+' window observed yet.'));return}
+  if(!rows.length){chart.append(el('div','empty','No '+({week:'weekly',month:'monthly',fable:'Fable'}[tab]||'5-hour')+' window observed yet.'));return}
 
   // Domain: every live bar plus "now", snapped to whole days (week) or hours (5h).
   // Windows that already reset stay out of it: one idle account would otherwise
@@ -350,6 +355,16 @@ function render(){
     pace.style.color=color;
     const d=el('div','detail','resets in '+fmtDur(remain)+rate);
     const info=el('div');info.append(d,pace);
+    // Fable requests route on the tighter of the weekly and Fable paces.
+    const gw=tab==='fable'&&(a.balance.windows||[]).find(v=>!v.model&&kind(v)==='week'&&Date.parse(v.resets_at)>now);
+    if(gw){
+      const len=gw.window_seconds*1000,g=Math.min(1,Math.max(0,(now-Date.parse(gw.resets_at)+len)/len))*100-gw.used_percent;
+      if(g<-ahead-0.5){
+        const b=el('div','detail','routes on the weekly limit: '+(g<0?Math.round(-g)+'% ahead of pace':Math.round(g)+'% spare vs pace'));
+        b.title='Fable requests use both limits. The weekly limit is further ahead of its pace, so it decides where new Fable sessions go.';
+        info.append(b);
+      }
+    }
     if(!week&&proj&&proj.window_seconds===w.window_seconds){
       const over=proj.projected_percent>100;
       const pr=el('div','detail','burn '+proj.burn_rate_percent_per_hour.toFixed(1)+'%/h ('+proj.rate_source+') → '+Math.round(proj.projected_percent)+'% at reset'+(proj.spilling?' · new sessions spill':''));

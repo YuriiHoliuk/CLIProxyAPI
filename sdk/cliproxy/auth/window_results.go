@@ -27,10 +27,15 @@ type WindowResult struct {
 	UsedPercent   float64   `json:"used_percent"`
 	ObservedAt    time.Time `json:"observed_at,omitempty"`
 	Source        string    `json:"source,omitempty"`
+	Model         string    `json:"model,omitempty"`
 }
 
 func (r WindowResult) key() string {
-	return fmt.Sprintf("%s|%g|%d", r.AuthID, r.WindowSeconds, r.ResetsAt.Unix())
+	key := fmt.Sprintf("%s|%g|%d", r.AuthID, r.WindowSeconds, r.ResetsAt.Unix())
+	if r.Model != "" {
+		key += "|" + r.Model
+	}
+	return key
 }
 
 // WindowResultLog appends one JSON line per reset window to a local file.
@@ -86,7 +91,7 @@ func (l *WindowResultLog) Record(a *Auth, now time.Time) {
 		if w.WindowSeconds <= 86400 || w.ResetsAt.IsZero() || w.ResetsAt.After(now) {
 			continue
 		}
-		fresh = append(fresh, WindowResult{AuthID: a.ID, Label: a.Label, Provider: a.Provider, Weight: authWeight(a), Name: w.Name, WindowSeconds: w.WindowSeconds, ResetsAt: w.ResetsAt.UTC(), UsedPercent: w.UsedPercent, ObservedAt: w.ObservedAt, Source: w.Source})
+		fresh = append(fresh, WindowResult{AuthID: a.ID, Label: a.Label, Provider: a.Provider, Weight: authWeight(a), Name: w.Name, WindowSeconds: w.WindowSeconds, ResetsAt: w.ResetsAt.UTC(), UsedPercent: w.UsedPercent, ObservedAt: w.ObservedAt, Source: w.Source, Model: w.Model})
 	}
 	if len(fresh) == 0 {
 		return
@@ -103,7 +108,7 @@ func (l *WindowResultLog) Record(a *Auth, now time.Time) {
 		}
 		l.seen[r.key()] = true
 		l.results = append(l.results, r)
-		log.Infof("quota window reset | auth=%s window=%s resets_at=%s used=%.0f%% observed_at=%s", r.AuthID, r.Name, r.ResetsAt.Format(time.RFC3339), r.UsedPercent, r.ObservedAt.Format(time.RFC3339))
+		log.Infof("quota window reset | auth=%s window=%s model=%s resets_at=%s used=%.0f%% observed_at=%s", r.AuthID, r.Name, r.Model, r.ResetsAt.Format(time.RFC3339), r.UsedPercent, r.ObservedAt.Format(time.RFC3339))
 	}
 }
 

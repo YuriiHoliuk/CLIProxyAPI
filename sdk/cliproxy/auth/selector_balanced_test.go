@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,8 +54,9 @@ func TestBalancedWindowsCodexAndLocal(t *testing.T) {
 	if len(windows) != 2 || windows[0].UsedPercent != 12 || windows[1].WindowSeconds != 604800 || !windows[1].ResetsAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("codex windows: %+v", windows)
 	}
-	if later := AccountBalance(a, now.Add(2*time.Hour), 1, 0); later.LongScore != 1 {
-		t.Fatalf("elapsed reset must become neutral: %+v", later)
+	// The reset passed an hour ago: a fresh window one hour into its week.
+	if later := AccountBalance(a, now.Add(2*time.Hour), "", 0); math.Abs(later.PaceGap-100.0/168) > 1e-9 || later.LongScore != 1+later.PaceGap/100 {
+		t.Fatalf("elapsed reset must become a fresh window: %+v", later)
 	}
 	path := filepath.Join(t.TempDir(), "windows.json")
 	raw, _ := json.Marshal(map[string]any{"updated_at": now.Add(time.Minute).Unix(), "five_hour": map[string]any{"used_percentage": 70, "resets_at": now.Add(3 * time.Hour).Unix()}})
@@ -70,12 +72,12 @@ func TestBalancedWindowsCodexAndLocal(t *testing.T) {
 	if len(AccountBalanceWindows(a)) != 1 {
 		t.Fatal("nonfinite quota accepted")
 	}
-	d := AccountBalance(&Auth{ID: "generic"}, now, 1, 1)
-	if d.Score != .5 || len(d.Windows) != 0 {
+	d := AccountBalance(&Auth{ID: "generic"}, now, "", 1)
+	if d.Score != 1-balanceSessionCost/100 || len(d.Windows) != 0 {
 		t.Fatalf("unknown generic: %+v", d)
 	}
 	a = balanceAuth("stale", 4, 50, now.Add(100*time.Hour), now.Add(-2*time.Hour))
-	if AccountBalance(a, now, 4, 0).Score >= AccountBalance(balanceAuth("fresh", 4, 50, now.Add(100*time.Hour), now), now, 4, 0).Score {
+	if AccountBalance(a, now, "", 0).Score >= AccountBalance(balanceAuth("fresh", 4, 50, now.Add(100*time.Hour), now), now, "", 0).Score {
 		t.Fatal("stale usage not projected")
 	}
 }
@@ -360,9 +362,9 @@ func TestBalancedFiveHourSpillover(t *testing.T) {
 	// High burn: 23% → 60% in the last hour with 3h left projects far past 100%.
 	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 25, 30: 42})
 	if got := pickID(t, s, big, small); got != "5x" {
-		t.Fatalf("high burn did not spill: %s %+v", got, AccountBalance(big, now, 4, 0).ShortProjection)
+		t.Fatalf("high burn did not spill: %s %+v", got, AccountBalance(big, now, "", 0).ShortProjection)
 	}
-	if p := AccountBalance(big, now, 4, 0).ShortProjection; p.RateSource != "recent" || p.ProjectedPercent < 150 {
+	if p := AccountBalance(big, now, "", 0).ShortProjection; p.RateSource != "recent" || p.ProjectedPercent < 150 {
 		t.Fatalf("projection: %+v", p)
 	}
 	if !BalancedSpilling(NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: s}))["20x"] {
@@ -372,7 +374,7 @@ func TestBalancedFiveHourSpillover(t *testing.T) {
 	s = &BalancedSelector{Now: func() time.Time { return now }}
 	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 55, 30: 58})
 	if got := pickID(t, s, big, small); got != "20x" {
-		t.Fatalf("low burn spilled: %s %+v", got, AccountBalance(big, now, 4, 0).ShortProjection)
+		t.Fatalf("low burn spilled: %s %+v", got, AccountBalance(big, now, "", 0).ShortProjection)
 	}
 	// Both exhaust before reset: the account with more 5h headroom takes the session.
 	withShortWindow(big, 60, now.Add(3*time.Hour), now, map[int]float64{55: 25, 30: 42})
@@ -389,7 +391,7 @@ func TestBalancedIgnoresShortWindowWithoutFiveHourLimit(t *testing.T) {
 	max := balanceAuth("max", 2, 30, now.Add(100*time.Hour), now)
 	max.Metadata = map[string]any{"five_hour_limit": false, "windows": []BalanceWindow{{Name: "5h", UsedPercent: 1, WindowSeconds: 18000, ResetsAt: now.Add(-72 * time.Hour), ObservedAt: now.Add(-73 * time.Hour)}}}
 	withShortWindow(max, 60, now.Add(3*time.Hour), now, map[int]float64{55: 25, 30: 42})
-	team := balanceAuth("team", 1, 30, now.Add(100*time.Hour), now)
+	team := balanceAuth("team", 1, 35, now.Add(100*time.Hour), now)
 	withShortWindow(team, 10, now.Add(3*time.Hour), now, map[int]float64{55: 9, 30: 9.5})
 
 	if windows := AccountBalanceWindows(max); len(windows) != 1 || windows[0].Name != "7d" {
@@ -398,11 +400,11 @@ func TestBalancedIgnoresShortWindowWithoutFiveHourLimit(t *testing.T) {
 	if history := AccountBalanceHistory(max); history != nil {
 		t.Fatalf("max kept short history: %+v", history)
 	}
-	d := AccountBalance(max, now, 2, 3)
+	d := AccountBalance(max, now, "", 3)
 	if d.ShortProjection != nil || d.ShortScore != 1 || d.Score != d.LongScore {
 		t.Fatalf("busy max account was cut by a 5h score: %+v", d)
 	}
-	if p := AccountBalance(team, now, 2, 0).ShortProjection; p == nil || p.UsedPercent != 10 {
+	if p := AccountBalance(team, now, "", 0).ShortProjection; p == nil || p.UsedPercent != 10 {
 		t.Fatalf("team lost its 5h projection: %+v", p)
 	}
 	// Counted, the burning short window would spill max to team.
@@ -418,7 +420,7 @@ func TestBalancedFiveHourSpilloverCascadesAcrossThree(t *testing.T) {
 	now := time.Date(2026, 10, 15, 17, 40, 0, 0, time.UTC)
 	s := &BalancedSelector{Now: func() time.Time { return now }}
 	first := balanceAuth("a-20x", 4, 37, now.Add(14*time.Hour), now)
-	second := balanceAuth("b-20x", 4, 50, now.Add(100*time.Hour), now)
+	second := balanceAuth("b-20x", 4, 30, now.Add(100*time.Hour), now)
 	third := balanceAuth("c-5x", 1, 2, now.Add(150*time.Hour), now)
 	if got := pickID(t, s, third, second, first); got != "a-20x" {
 		t.Fatalf("ranking: %s", got)
@@ -455,7 +457,7 @@ func TestBalancedFiveHourYoungWindowAndEdgeCases(t *testing.T) {
 	// recent rate, and the elapsed average is floored at 30 minutes.
 	reset := now.Add(5*time.Hour - 12*time.Minute)
 	withShortWindow(big, 8, reset, now, map[int]float64{10: 2})
-	p := AccountBalance(big, now, 4, 0).ShortProjection
+	p := AccountBalance(big, now, "", 0).ShortProjection
 	if p.RateSource != "average" || p.BurnRatePerHour != 16 || p.ProjectedPercent > 100 {
 		t.Fatalf("young window: %+v", p)
 	}
@@ -464,27 +466,27 @@ func TestBalancedFiveHourYoungWindowAndEdgeCases(t *testing.T) {
 	}
 	// Samples from the previous window are ignored.
 	withShortWindow(big, 8, reset, now, map[int]float64{10: 2, 40: 90})
-	if p := AccountBalance(big, now, 4, 0).ShortProjection; p.RateSource != "average" {
+	if p := AccountBalance(big, now, "", 0).ShortProjection; p.RateSource != "average" {
 		t.Fatalf("previous window used: %+v", p)
 	}
 	// No observation for over an hour: the account is idle and can win sessions back.
 	withShortWindow(big, 90, now.Add(2*time.Hour), now.Add(-70*time.Minute), map[int]float64{100: 20})
-	if p := AccountBalance(big, now, 4, 0).ShortProjection; p.RateSource != "idle" || p.ProjectedPercent != 90 {
+	if p := AccountBalance(big, now, "", 0).ShortProjection; p.RateSource != "idle" || p.ProjectedPercent != 90 {
 		t.Fatalf("stale: %+v", p)
 	}
 	// An elapsed reset is a fresh, unknown window.
 	withShortWindow(big, 99, now.Add(-time.Minute), now.Add(-2*time.Hour), nil)
-	if p := AccountBalance(big, now, 4, 0).ShortProjection; p != nil {
+	if p := AccountBalance(big, now, "", 0).ShortProjection; p != nil {
 		t.Fatalf("elapsed reset projected: %+v", p)
 	}
 	// No history at all: the elapsed average since window start (3h in, 90% used → 30%/h).
 	withShortWindow(big, 90, now.Add(2*time.Hour), now, nil)
-	if p := AccountBalance(big, now, 4, 0).ShortProjection; p.RateSource != "average" || p.ProjectedPercent != 150 {
+	if p := AccountBalance(big, now, "", 0).ShortProjection; p.RateSource != "average" || p.ProjectedPercent != 150 {
 		t.Fatalf("no history: %+v", p)
 	}
 	// Codex primary 5h windows project the same way.
 	codex := &Auth{ID: "codex", Provider: "codex", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{"X-Codex-Primary-Used-Percent": "50", "X-Codex-Primary-Window-Minutes": "300", "X-Codex-Primary-Reset-After-Seconds": "3600", "X-Codex-Secondary-Used-Percent": "10", "X-Codex-Secondary-Window-Minutes": "10080", "X-Codex-Secondary-Reset-After-Seconds": "86400"}}}
-	if p := AccountBalance(codex, now, 1, 0).ShortProjection; p == nil || p.WindowSeconds != 18000 || p.ProjectedPercent != 62.5 {
+	if p := AccountBalance(codex, now, "", 0).ShortProjection; p == nil || p.WindowSeconds != 18000 || p.ProjectedPercent != 62.5 {
 		t.Fatalf("codex: %+v", p)
 	}
 }
@@ -504,7 +506,7 @@ func TestBalancedFiveHourHysteresis(t *testing.T) {
 	}{{26, "20x"}, {15, "5x"}, {26, "5x"}, {28, "20x"}, {26, "20x"}, {24, "5x"}} {
 		at(step.ref)
 		if got := pickID(t, s, big, small); got != step.want {
-			t.Fatalf("ref %v (projected %.0f%%): got %s want %s", step.ref, AccountBalance(big, now, 4, 0).ShortProjection.ProjectedPercent, got, step.want)
+			t.Fatalf("ref %v (projected %.0f%%): got %s want %s", step.ref, AccountBalance(big, now, "", 0).ShortProjection.ProjectedPercent, got, step.want)
 		}
 	}
 }
@@ -695,5 +697,107 @@ func TestBalancedFreeSubagentsAndInheritedForks(t *testing.T) {
 	}
 	if got := pick("claude-opus-5-5", request("", plain)); got != "20x" {
 		t.Fatalf("parent moved: %s", got)
+	}
+}
+
+// weekAuth is a weekly-only account whose window has elapsed elapsedPct.
+func weekAuth(id string, weight int, used, elapsedPct float64, now time.Time) *Auth {
+	reset := now.Add(time.Duration((100 - elapsedPct) / 100 * float64(7*24*time.Hour)))
+	return balanceAuth(id, weight, used, reset, now)
+}
+
+func TestBalancedRoutesToAccountFurthestBehindPace(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	s := &BalancedSelector{Now: func() time.Time { return now }}
+	// 28% used 30% into its week trails by 2 points; 60% used 80% in trails by 20.
+	early := weekAuth("early", 2, 28, 30, now)
+	late := weekAuth("late", 2, 60, 80, now)
+	if got := pickID(t, s, early, late); got != "late" {
+		t.Fatalf("pace: %s", got)
+	}
+	if d := AccountBalance(late, now, "", 0); math.Abs(d.PaceGap-20) > 1e-6 {
+		t.Fatalf("pace gap: %+v", d)
+	}
+	// Weight does not buy priority: the heavier plan is ahead of its pace.
+	heavy := weekAuth("heavy", 2, 50, 45, now)
+	light := weekAuth("light", 1, 40, 45, now)
+	if got := pickID(t, s, heavy, light); got != "light" {
+		t.Fatalf("weight overrode pace: %s", got)
+	}
+	// Busy sessions spread near-ties but never a clear pace lead.
+	a, b := weekAuth("a", 1, 40, 50, now), weekAuth("b", 1, 41, 50, now)
+	ctx := context.WithValue(context.Background(), balanceLoadsKey{}, map[string]int{"a": 1})
+	if picked, err := s.Pick(ctx, "claude", "", cliproxyexecutor.Options{}, []*Auth{a, b}); err != nil || picked.ID != "b" {
+		t.Fatalf("busy near-tie: %v %v", picked, err)
+	}
+	// A window used up just before its reset is the least ahead of pace, yet
+	// it cannot serve.
+	if got := pickID(t, s, weekAuth("spent", 1, 100, 99, now), weekAuth("ahead", 1, 60, 50, now)); got != "ahead" {
+		t.Fatalf("exhausted window picked: %s", got)
+	}
+	b = weekAuth("b", 1, 45, 50, now)
+	if picked, err := s.Pick(ctx, "claude", "", cliproxyexecutor.Options{}, []*Auth{a, b}); err != nil || picked.ID != "a" {
+		t.Fatalf("one busy session outweighed a 5-point lead: %v %v", picked, err)
+	}
+}
+
+func TestBalancedFableWindow(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(84 * time.Hour) // half the week has elapsed
+	q := QuotaState{}
+	q.ObserveResponseHeadersForProvider("claude", http.Header{
+		"Anthropic-Ratelimit-Unified-7d-Utilization":    []string{"0.64"},
+		"Anthropic-Ratelimit-Unified-7d-Reset":          []string{fmt.Sprint(reset.Unix())},
+		"Anthropic-Ratelimit-Unified-7d_oi-Utilization": []string{"0.11"},
+		"Anthropic-Ratelimit-Unified-7d_oi-Reset":       []string{fmt.Sprint(reset.Unix())},
+	}, now)
+	// Only Fable responses carry 7d_oi; another model's response keeps it.
+	q.ObserveResponseHeadersForProvider("claude", http.Header{
+		"Anthropic-Ratelimit-Unified-7d-Utilization": []string{"0.65"},
+		"Anthropic-Ratelimit-Unified-7d-Reset":       []string{fmt.Sprint(reset.Unix())},
+	}, now.Add(time.Minute))
+	if len(q.BalanceWindows) != 2 || q.BalanceWindows[0].Model != "" || q.BalanceWindows[0].UsedPercent != 65 ||
+		q.BalanceWindows[1].Model != FableWindowModel || q.BalanceWindows[1].Name != "7d_oi" || math.Abs(q.BalanceWindows[1].UsedPercent-11) > 1e-9 {
+		t.Fatalf("fable window: %+v", q.BalanceWindows)
+	}
+
+	s := &BalancedSelector{Now: func() time.Time { return now }}
+	fable := func(id string, weekly, fableUsed float64) *Auth {
+		a := weekAuth(id, 2, weekly, 50, now)
+		a.Quota.Signals["Anthropic-Ratelimit-Unified-7d_oi-Utilization"] = fmt.Sprint(fableUsed / 100)
+		a.Quota.Signals["Anthropic-Ratelimit-Unified-7d_oi-Reset"] = a.Quota.Signals["Anthropic-Ratelimit-Unified-7d-Reset"]
+		return a
+	}
+	pick := func(model string, auths ...*Auth) string {
+		picked, err := s.Pick(context.Background(), "claude", model, cliproxyexecutor.Options{}, auths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return picked.ID
+	}
+	// Spare weekly quota but Fable ahead of pace: Fable goes elsewhere, other models stay.
+	spare := fable("spare-weekly", 30, 60)
+	even := fable("even", 45, 45)
+	if got := pick("claude-fable-5-2", spare, even); got != "even" {
+		t.Fatalf("fable ignored its own limit: %s", got)
+	}
+	if got := pick("claude-opus-5-5", spare, even); got != "spare-weekly" {
+		t.Fatalf("other models ranked on the fable limit: %s", got)
+	}
+	// Spare Fable quota but the weekly limit ahead of pace: weekly binds.
+	spareFable := fable("spare-fable", 60, 10)
+	if got := pick("claude-fable-5-2", spareFable, even); got != "even" {
+		t.Fatalf("fable ignored the weekly limit: %s", got)
+	}
+	if d := AccountBalance(spareFable, now, "claude-fable-5-2", 0); math.Abs(d.PaceGap+10) > 1e-6 {
+		t.Fatalf("binding gap: %+v", d)
+	}
+	// An exhausted Fable limit keeps Fable away while other models still use the account.
+	spentFable := fable("spent-fable", 20, 100)
+	if got := pick("claude-fable-5-2", spentFable, even); got != "even" {
+		t.Fatalf("exhausted fable limit picked: %s", got)
+	}
+	if got := pick("claude-opus-5-5", spentFable, even); got != "spent-fable" {
+		t.Fatalf("exhausted fable limit blocked other models: %s", got)
 	}
 }

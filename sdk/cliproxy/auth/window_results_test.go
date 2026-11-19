@@ -74,3 +74,21 @@ func TestMarkResultRecordsWindowBeforeObservationReplacesIt(t *testing.T) {
 		t.Fatalf("new window not observed: %+v", windows)
 	}
 }
+
+func TestWindowResultLogKeepsFableApartFromWeekly(t *testing.T) {
+	now := time.Date(2026, 11, 23, 6, 0, 0, 0, time.UTC)
+	reset := now.Add(-time.Hour)
+	results, err := OpenWindowResultLog(filepath.Join(t.TempDir(), "quota-resets.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Auth{ID: "claude-work-20x.json", Provider: "claude", Metadata: map[string]any{"windows": []BalanceWindow{
+		{Name: "7d", UsedPercent: 90, WindowSeconds: 604800, ResetsAt: reset, ObservedAt: now.Add(-2 * time.Hour)},
+		{Name: "7d_oi", UsedPercent: 40, WindowSeconds: 604800, ResetsAt: reset, ObservedAt: now.Add(-2 * time.Hour), Model: FableWindowModel},
+	}}}
+	results.Record(a, now)
+	got := results.Results(time.Time{})
+	if len(got) != 2 || got[0].Model == got[1].Model {
+		t.Fatalf("results: %+v", got)
+	}
+}

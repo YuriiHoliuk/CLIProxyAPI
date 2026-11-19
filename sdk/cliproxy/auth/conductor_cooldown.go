@@ -1048,7 +1048,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				}
 				// One journal line per observation lets quota spend be attributed
 				// to sessions afterwards; the full history stays in the journal.
-				selectorLogEntry(ctx).Infof("quota observation | auth=%s provider=%s model=%s session=%s windows=%s projection=%s", auth.ID, result.Provider, result.Model, quotaObservationSessionID(result.Options), formatQuotaWindows(auth.Quota.BalanceWindows), formatShortProjection(AccountBalance(auth, now, 1, 0).ShortProjection))
+				selectorLogEntry(ctx).Infof("quota observation | auth=%s provider=%s model=%s session=%s windows=%s projection=%s", auth.ID, result.Provider, result.Model, quotaObservationSessionID(result.Options), formatQuotaWindows(auth.Quota.BalanceWindows), formatShortProjection(AccountBalance(auth, now, "", 0).ShortProjection))
 			}
 			if modelState != nil {
 				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)

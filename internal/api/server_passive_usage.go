@@ -17,13 +17,6 @@ import (
 func (s *Server) passiveUsage(c *gin.Context) {
 	accounts := s.handlers.AuthManager.List()
 	loads := s.handlers.AuthManager.BalanceLoads()
-	weights := map[string]int64{}
-	for _, a := range accounts {
-		d := auth.AccountBalance(a, time.Now(), 1, 0)
-		if d.Weight > weights[a.Provider] {
-			weights[a.Provider] = d.Weight
-		}
-	}
 	entries := make([]gin.H, 0, len(accounts))
 	now := time.Now()
 	spilling := auth.BalancedSpilling(s.handlers.AuthManager.Selector())
@@ -31,7 +24,7 @@ func (s *Server) passiveUsage(c *gin.Context) {
 	for _, a := range accounts {
 		// An idle account sends no observation that would record its reset.
 		results.Record(a, now)
-		balance := auth.AccountBalance(a, now, weights[a.Provider], loads[a.ID])
+		balance := auth.AccountBalance(a, now, "", loads[a.ID])
 		if balance.ShortProjection != nil {
 			balance.ShortProjection.Spilling = spilling[a.ID]
 		}
@@ -68,7 +61,7 @@ func windowResultLogPath(configFilePath string) string {
 }
 
 // passiveDashboardHTML draws every quota window as a bar on one shared time axis
-// (a week tab and a 5-hour tab). It reads /usage only.
+// (5-hour, week, month and Fable tabs). It reads /usage only.
 //
 //go:embed passive_dashboard.html
 var passiveDashboardHTML string
