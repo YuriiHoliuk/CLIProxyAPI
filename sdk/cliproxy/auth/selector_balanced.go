@@ -24,15 +24,21 @@ type BalanceWindow struct {
 	ResetsAt      time.Time `json:"resets_at,omitempty"`
 	ObservedAt    time.Time `json:"observed_at,omitempty"`
 	Source        string    `json:"source"`
+	// Model limits the window to one model family ("fable"). Empty applies to every model.
+	Model string `json:"model,omitempty"`
 }
 
 type BalanceDetails struct {
-	Weight     int64           `json:"weight"`
-	Busy       int             `json:"busy"`
-	Score      float64         `json:"score"`
-	ShortScore float64         `json:"short_score"`
-	LongScore  float64         `json:"long_score"`
-	Windows    []BalanceWindow `json:"windows"`
+	Weight     int64   `json:"weight"`
+	Busy       int     `json:"busy"`
+	Score      float64 `json:"score"`
+	ShortScore float64 `json:"short_score"`
+	LongScore  float64 `json:"long_score"`
+	// PaceGap is how many percentage points the long window trails an even
+	// burn (negative: ahead of pace). For a Fable request it is the lower of
+	// the weekly and Fable gaps.
+	PaceGap float64         `json:"pace_gap"`
+	Windows []BalanceWindow `json:"windows"`
 	// ShortProjection is nil when the short window or its reset is unknown.
 	ShortProjection *BalanceProjection `json:"short_projection,omitempty"`
 }
@@ -66,13 +72,22 @@ const (
 	// An account starts spilling above balanceSpillEnter and stops at or below balanceSpillExit.
 	balanceSpillEnter = 100.0
 	balanceSpillExit  = 95.0
+	// balanceSessionCost is the share of a weight-1 long window, in percentage
+	// points, that each busy session is assumed to claim. It spreads parallel
+	// new sessions only when accounts are close to each other's pace.
+	balanceSessionCost = 2.0
+	// FableWindowModel marks the Fable-only weekly window (Claude 7d_oi).
+	FableWindowModel = "fable"
 )
 
-// BalancedSelector ranks accounts by the weekly remaining-capacity/reset-urgency
-// score. A new session goes to the top account unless its projected 5h use at
-// reset exceeds 100%; then it spills down the ranking to the first account whose
-// projection fits. Affinity wraps this selector and only calls it for cold
-// bindings or failover.
+// BalancedSelector ranks accounts by pace: the share of the long (weekly)
+// window that has elapsed minus the share used. The account furthest behind
+// its pace takes a new session, so every account tracks its own reset instead
+// of one draining before the next. A Fable request ranks on the tighter of the
+// weekly and Fable windows. A new session goes to the top account unless its
+// projected 5h use at reset exceeds 100%; then it spills down the ranking to
+// the first account whose projection fits. Affinity wraps this selector and
+// only calls it for cold bindings or failover.
 type BalancedSelector struct {
 	Now func() time.Time
 
@@ -91,19 +106,13 @@ func (s *BalancedSelector) Pick(ctx context.Context, provider, model string, opt
 		return nil, err
 	}
 	loads, _ := ctx.Value(balanceLoadsKey{}).(map[string]int)
-	maxWeight := int64(1)
-	for _, a := range auths {
-		if w := authWeight(a); w > maxWeight {
-			maxWeight = w
-		}
-	}
 	if len(available) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no positive-weight credential available"}
 	}
 	sort.SliceStable(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	ranked := make([]BalanceDetails, len(available))
 	for i, a := range available {
-		ranked[i] = AccountBalance(a, now, maxWeight, loads[a.ID])
+		ranked[i] = AccountBalance(a, now, model, loads[a.ID])
 	}
 	order := make([]int, len(available))
 	for i := range order {
@@ -183,18 +192,23 @@ func BalancedSpilling(sel Selector) map[string]bool {
 	return out
 }
 
-// AccountBalance is shared by routing and the passive dashboard.
-func AccountBalance(a *Auth, now time.Time, maxWeight int64, busy int) BalanceDetails {
+// AccountBalance is shared by routing and the passive dashboard. model is the
+// routed model; a Fable model also ranks on the Fable window.
+func AccountBalance(a *Auth, now time.Time, model string, busy int) BalanceDetails {
 	d := BalanceDetails{Weight: authWeight(a), Busy: busy, Windows: AccountBalanceWindows(a)}
-	if maxWeight < 1 {
-		maxWeight = 1
-	}
 	if busy < 0 {
 		busy = 0
 	}
-	short, long := (*BalanceWindow)(nil), (*BalanceWindow)(nil)
+	short, long, scoped := (*BalanceWindow)(nil), (*BalanceWindow)(nil), (*BalanceWindow)(nil)
+	family := modelWindowFamily(model)
 	for i := range d.Windows {
 		w := &d.Windows[i]
+		if w.Model != "" {
+			if w.Model == family && (scoped == nil || w.WindowSeconds > scoped.WindowSeconds) {
+				scoped = w
+			}
+			continue
+		}
 		if w.WindowSeconds <= 86400 {
 			if short == nil || w.WindowSeconds < short.WindowSeconds {
 				short = w
@@ -203,21 +217,69 @@ func AccountBalance(a *Auth, now time.Time, maxWeight int64, busy int) BalanceDe
 			long = w
 		}
 	}
-	share := float64(d.Weight) / float64(busy+1)
 	// The short score is per-weight health (1 = nominal 5h pace for one session).
 	// Weight already scales the long score; scaling here too halved every
 	// weight-1 account's score even with an idle 5h window. Without a 5h limit
 	// it stays neutral: busy sessions already divide the long score.
 	d.ShortScore = 1
 	if hasShortLimit(a) {
-		d.ShortScore = balanceWindowScore(short, now, 5, 1, 1, 1/float64(busy+1), 1)
+		d.ShortScore = shortWindowScore(short, now, 1/float64(busy+1))
 	}
-	d.LongScore = balanceWindowScore(long, now, 168, 5, 24, share, float64(maxWeight))
+	d.PaceGap = paceGap(long, now)
+	if scoped != nil {
+		d.PaceGap = math.Min(d.PaceGap, paceGap(scoped, now))
+	}
+	// 1 is exactly on pace. Busy sessions claim a little of the account; a
+	// heavier plan feels each one less. An exhausted window serves nothing
+	// until its reset, however close that reset is.
+	d.LongScore = math.Max(0, 1+d.PaceGap/100-float64(busy)*balanceSessionCost/100/float64(d.Weight))
+	if exhausted(long, now) || exhausted(scoped, now) {
+		d.LongScore = 0
+	}
 	d.Score = d.LongScore * math.Min(d.ShortScore/0.5, 1)
 	if short != nil {
 		d.ShortProjection = projectShortWindow(*short, AccountBalanceHistory(a), now)
 	}
 	return d
+}
+
+// modelWindowFamily names the model-scoped windows that also limit model.
+func modelWindowFamily(model string) string {
+	if strings.Contains(strings.ToLower(model), FableWindowModel) {
+		return FableWindowModel
+	}
+	return ""
+}
+
+func exhausted(w *BalanceWindow, now time.Time) bool {
+	return w != nil && w.UsedPercent >= 100 && (w.ResetsAt.IsZero() || w.ResetsAt.After(now))
+}
+
+// paceGap returns how many percentage points w's usage trails an even burn
+// across the window: the elapsed share minus the used share. Usage observed
+// more than an hour ago is projected forward at its average rate since the
+// window opened (floored at a seventh of the window). A window whose reset
+// passed is a fresh window that opened at that reset. A window without a reset
+// counts as just opened. An unknown window is on pace.
+func paceGap(w *BalanceWindow, now time.Time) float64 {
+	if w == nil || w.WindowSeconds <= 0 {
+		return 0
+	}
+	if w.ResetsAt.IsZero() {
+		return -w.UsedPercent
+	}
+	length := time.Duration(w.WindowSeconds * float64(time.Second))
+	if !w.ResetsAt.After(now) {
+		return 100 * float64(now.Sub(w.ResetsAt)%length) / float64(length)
+	}
+	start := w.ResetsAt.Add(-length)
+	used := w.UsedPercent
+	if !w.ObservedAt.IsZero() && now.Sub(w.ObservedAt) > time.Hour {
+		observed := math.Max(w.ObservedAt.Sub(start).Hours(), length.Hours()/7)
+		used = math.Min(100, used+used/observed*now.Sub(w.ObservedAt).Hours())
+	}
+	elapsed := math.Min(1, math.Max(0, float64(now.Sub(start))/float64(length)))
+	return 100*elapsed - used
 }
 
 // projectShortWindow extrapolates the current burn rate to the window's reset.
@@ -338,11 +400,14 @@ func pruneBalanceHistory(samples []BalanceWindow) []BalanceWindow {
 	return out
 }
 
-func balanceWindowScore(w *BalanceWindow, now time.Time, hours, resetFloor, elapsedFloor, share, maxWeight float64) float64 {
+// shortWindowScore is the 5h health: remaining capacity per hour until reset
+// relative to the window's nominal refill (1 = nominal pace for one session).
+func shortWindowScore(w *BalanceWindow, now time.Time, share float64) float64 {
+	hours, resetFloor, elapsedFloor := 5.0, 1.0, 1.0
 	pace := 1 / hours
 	if w != nil {
 		hours = w.WindowSeconds / 3600
-		if hours != 5 && hours != 168 {
+		if hours != 5 {
 			resetFloor = math.Max(hours/168*5, math.Min(hours, 1))
 			elapsedFloor = math.Max(hours/168*24, math.Min(hours, 1))
 		}
@@ -360,27 +425,33 @@ func balanceWindowScore(w *BalanceWindow, now time.Time, hours, resetFloor, elap
 			pace = math.Max(0, 1-used) / remainingHours
 		}
 	}
-	return share * pace / (maxWeight / hours)
+	return share * pace * hours
 }
 
-// AccountBalanceWindows combines valid observations by freshness per duration.
+// AccountBalanceWindows combines valid observations by freshness per duration
+// and model scope.
 func AccountBalanceWindows(a *Auth) []BalanceWindow {
 	if a == nil {
 		return nil
 	}
-	windows := make(map[float64]BalanceWindow)
+	type slot struct {
+		model string
+		secs  float64
+	}
+	windows := make(map[slot]BalanceWindow)
 	add := func(w BalanceWindow) {
 		if math.IsNaN(w.UsedPercent) || math.IsInf(w.UsedPercent, 0) || w.UsedPercent < 0 || w.UsedPercent > 100 || w.WindowSeconds <= 0 || math.IsNaN(w.WindowSeconds) || math.IsInf(w.WindowSeconds, 0) {
 			return
 		}
-		old, ok := windows[w.WindowSeconds]
+		k := slot{w.Model, w.WindowSeconds}
+		old, ok := windows[k]
 		if !ok || w.ObservedAt.After(old.ObservedAt) {
 			// A partial response can refresh utilization without repeating reset.
 			// Retain the deadline only within the same still-open window.
 			if ok && w.ResetsAt.IsZero() && old.ResetsAt.After(w.ObservedAt) {
 				w.ResetsAt = old.ResetsAt
 			}
-			windows[w.WindowSeconds] = w
+			windows[k] = w
 		}
 	}
 	for _, w := range a.Quota.BalanceWindows {
@@ -404,13 +475,15 @@ func AccountBalanceWindows(a *Auth) []BalanceWindow {
 		}
 		return time.Time{}
 	}
+	// 7d_oi is the Fable-only weekly limit. Only Fable responses carry it, so
+	// the stored window survives the other models' responses.
 	for _, p := range []struct {
-		name string
-		secs float64
-	}{{"5h", 18000}, {"7d", 604800}} {
+		name, model string
+		secs        float64
+	}{{"5h", "", 18000}, {"7d", "", 604800}, {"7d_oi", FableWindowModel, 604800}} {
 		prefix := "Anthropic-Ratelimit-Unified-" + p.name + "-"
 		if used, ok := number(prefix + "Utilization"); ok {
-			add(BalanceWindow{Name: p.name, UsedPercent: used * 100, WindowSeconds: p.secs, ResetsAt: reset(prefix + "Reset"), ObservedAt: a.Quota.ObservedAt, Source: "response"})
+			add(BalanceWindow{Name: p.name, UsedPercent: used * 100, WindowSeconds: p.secs, ResetsAt: reset(prefix + "Reset"), ObservedAt: a.Quota.ObservedAt, Source: "response", Model: p.model})
 		}
 	}
 	for _, name := range []string{"Primary", "Secondary"} {
@@ -505,6 +578,11 @@ func AccountBalanceWindows(a *Auth) []BalanceWindow {
 		}
 		out = append(out, w)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].WindowSeconds < out[j].WindowSeconds })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].WindowSeconds != out[j].WindowSeconds {
+			return out[i].WindowSeconds < out[j].WindowSeconds
+		}
+		return out[i].Model < out[j].Model
+	})
 	return out
 }
