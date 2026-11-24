@@ -77,8 +77,31 @@ func TestBalancedWindowsCodexAndLocal(t *testing.T) {
 		t.Fatalf("unknown generic: %+v", d)
 	}
 	a = balanceAuth("stale", 4, 50, now.Add(100*time.Hour), now.Add(-2*time.Hour))
-	if AccountBalance(a, now, "", 0).Score >= AccountBalance(balanceAuth("fresh", 4, 50, now.Add(100*time.Hour), now), now, "", 0).Score {
-		t.Fatal("stale usage not projected")
+	if AccountBalance(a, now, "", 0).Score != AccountBalance(balanceAuth("fresh", 4, 50, now.Add(100*time.Hour), now), now, "", 0).Score {
+		t.Fatal("stale usage projected forward")
+	}
+}
+
+// Production, 2026-11-21..24: Team went idle 11 points ahead of pace while a
+// freshly reset Max took new sessions. Projecting Team's old average burn made
+// its estimate outrun the week, so it stayed idle for three days and reached
+// its last two days with 66% unused. Usage only moves when this proxy routes
+// to the account, so Team must win back once the others pass it.
+func TestBalancedIdleAccountWinsBack(t *testing.T) {
+	teamReset := time.Date(2026, 11, 26, 19, 0, 0, 0, time.UTC)
+	idleSince := time.Date(2026, 11, 21, 9, 16, 0, 0, time.UTC)
+	now := time.Date(2026, 11, 23, 13, 0, 0, 0, time.UTC)
+	s := &BalancedSelector{Now: func() time.Time { return now }}
+	team := balanceAuth("team", 1, 34, teamReset, idleSince)
+	team.Quota.Signals["Anthropic-Ratelimit-Unified-5h-Utilization"] = "0.03"
+	team.Quota.Signals["Anthropic-Ratelimit-Unified-5h-Reset"] = fmt.Sprint(idleSince.Add(2 * time.Hour).Unix())
+	personal := balanceAuth("personal", 2, 21, time.Date(2026, 11, 28, 2, 0, 0, 0, time.UTC), now)
+	work := balanceAuth("work", 2, 1, time.Date(2026, 11, 30, 5, 0, 0, 0, time.UTC), now)
+	if got := pickID(t, s, team, personal, work); got != "team" {
+		t.Fatalf("idle account stayed starved: %s team=%+v", got, AccountBalance(team, now, "", 0))
+	}
+	if d := AccountBalance(team, now, "", 0); math.Abs(d.PaceGap-(100*(1-78.0/168)-34)) > 1e-6 {
+		t.Fatalf("idle gap: %+v", d)
 	}
 }
 
