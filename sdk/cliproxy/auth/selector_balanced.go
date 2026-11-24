@@ -256,11 +256,12 @@ func exhausted(w *BalanceWindow, now time.Time) bool {
 }
 
 // paceGap returns how many percentage points w's usage trails an even burn
-// across the window: the elapsed share minus the used share. Usage observed
-// more than an hour ago is projected forward at its average rate since the
-// window opened (floored at a seventh of the window). A window whose reset
-// passed is a fresh window that opened at that reset. A window without a reset
-// counts as just opened. An unknown window is on pace.
+// across the window: the elapsed share minus the used share. Old usage is not
+// projected forward: this proxy's traffic is what moves the window, so an
+// account it stopped picking stays where it was observed and falls behind pace
+// until it wins new sessions back. A window whose reset passed is a fresh
+// window that opened at that reset. A window without a reset counts as just
+// opened. An unknown window is on pace.
 func paceGap(w *BalanceWindow, now time.Time) float64 {
 	if w == nil || w.WindowSeconds <= 0 {
 		return 0
@@ -273,13 +274,8 @@ func paceGap(w *BalanceWindow, now time.Time) float64 {
 		return 100 * float64(now.Sub(w.ResetsAt)%length) / float64(length)
 	}
 	start := w.ResetsAt.Add(-length)
-	used := w.UsedPercent
-	if !w.ObservedAt.IsZero() && now.Sub(w.ObservedAt) > time.Hour {
-		observed := math.Max(w.ObservedAt.Sub(start).Hours(), length.Hours()/7)
-		used = math.Min(100, used+used/observed*now.Sub(w.ObservedAt).Hours())
-	}
 	elapsed := math.Min(1, math.Max(0, float64(now.Sub(start))/float64(length)))
-	return 100*elapsed - used
+	return 100*elapsed - w.UsedPercent
 }
 
 // projectShortWindow extrapolates the current burn rate to the window's reset.
@@ -402,22 +398,18 @@ func pruneBalanceHistory(samples []BalanceWindow) []BalanceWindow {
 
 // shortWindowScore is the 5h health: remaining capacity per hour until reset
 // relative to the window's nominal refill (1 = nominal pace for one session).
+// Like paceGap, it takes old usage as observed rather than projecting it.
 func shortWindowScore(w *BalanceWindow, now time.Time, share float64) float64 {
-	hours, resetFloor, elapsedFloor := 5.0, 1.0, 1.0
+	hours, resetFloor := 5.0, 1.0
 	pace := 1 / hours
 	if w != nil {
 		hours = w.WindowSeconds / 3600
 		if hours != 5 {
 			resetFloor = math.Max(hours/168*5, math.Min(hours, 1))
-			elapsedFloor = math.Max(hours/168*24, math.Min(hours, 1))
 		}
 		pace = 1 / hours
 		if w.ResetsAt.IsZero() || w.ResetsAt.After(now) {
 			used := w.UsedPercent / 100
-			if !w.ObservedAt.IsZero() && now.Sub(w.ObservedAt) > time.Hour && !w.ResetsAt.IsZero() {
-				elapsed := math.Max(w.ObservedAt.Sub(w.ResetsAt.Add(-time.Duration(w.WindowSeconds)*time.Second)).Hours(), elapsedFloor)
-				used = math.Min(1, used+used/elapsed*now.Sub(w.ObservedAt).Hours())
-			}
 			remainingHours := hours
 			if !w.ResetsAt.IsZero() {
 				remainingHours = math.Max(w.ResetsAt.Sub(now).Hours(), resetFloor)
