@@ -469,13 +469,23 @@ func AccountBalanceWindows(a *Auth) []BalanceWindow {
 	}
 	// 7d_oi is the Fable-only weekly limit. Only Fable responses carry it, so
 	// the stored window survives the other models' responses.
+	// A rejected window is used up whatever its utilization says: usage made
+	// outside this proxy reaches it only through the rejection, and a 429 may
+	// omit the utilization header altogether.
+	claim := strings.ToLower(strings.TrimSpace(signals.Get("Anthropic-Ratelimit-Unified-Representative-Claim")))
+	unifiedRejected := strings.EqualFold(strings.TrimSpace(signals.Get("Anthropic-Ratelimit-Unified-Status")), "rejected")
 	for _, p := range []struct {
-		name, model string
-		secs        float64
-	}{{"5h", "", 18000}, {"7d", "", 604800}, {"7d_oi", FableWindowModel, 604800}} {
+		name, claim, model string
+		secs               float64
+	}{{"5h", "five_hour", "", 18000}, {"7d", "seven_day", "", 604800}, {"7d_oi", "", FableWindowModel, 604800}} {
 		prefix := "Anthropic-Ratelimit-Unified-" + p.name + "-"
-		if used, ok := number(prefix + "Utilization"); ok {
-			add(BalanceWindow{Name: p.name, UsedPercent: used * 100, WindowSeconds: p.secs, ResetsAt: reset(prefix + "Reset"), ObservedAt: a.Quota.ObservedAt, Source: "response", Model: p.model})
+		used, ok := number(prefix + "Utilization")
+		used *= 100
+		if strings.EqualFold(strings.TrimSpace(signals.Get(prefix+"Status")), "rejected") || (unifiedRejected && p.claim != "" && claim == p.claim) {
+			used, ok = 100, true
+		}
+		if ok {
+			add(BalanceWindow{Name: p.name, UsedPercent: math.Min(used, 100), WindowSeconds: p.secs, ResetsAt: reset(prefix + "Reset"), ObservedAt: a.Quota.ObservedAt, Source: "response", Model: p.model})
 		}
 	}
 	for _, name := range []string{"Primary", "Secondary"} {
