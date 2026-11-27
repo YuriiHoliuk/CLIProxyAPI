@@ -351,6 +351,48 @@ func TestAccountBalanceWindowsRetainsResetOnPartialResponse(t *testing.T) {
 	}
 }
 
+func TestAccountBalanceWindowsRejectedWindowIsUsedUp(t *testing.T) {
+	now := time.Date(2026, 11, 27, 15, 48, 0, 0, time.UTC)
+	reset := now.Add(12 * time.Minute)
+	old := []BalanceWindow{{Name: "5h", WindowSeconds: 18000, UsedPercent: 87, ObservedAt: now.Add(-17 * time.Minute), ResetsAt: reset, Source: "response"}}
+	byName := func(ws []BalanceWindow) map[string]BalanceWindow {
+		out := map[string]BalanceWindow{}
+		for _, w := range ws {
+			out[w.Name] = w
+		}
+		return out
+	}
+	// The 429 reports the 5h window rejected, without its utilization.
+	a := &Auth{Quota: QuotaState{ObservedAt: now, BalanceWindows: old, Signals: map[string]string{
+		"Anthropic-Ratelimit-Unified-Status":         "rejected",
+		"Anthropic-Ratelimit-Unified-5h-Status":      "rejected",
+		"Anthropic-Ratelimit-Unified-7d-Utilization": "0.11",
+	}}}
+	got := byName(AccountBalanceWindows(a))
+	if w := got["5h"]; w.UsedPercent != 100 || !w.ResetsAt.Equal(reset) || !w.ObservedAt.Equal(now) {
+		t.Fatalf("rejected 5h window = %+v", w)
+	}
+	if got["7d"].UsedPercent != 11 {
+		t.Fatalf("7d window = %+v", got["7d"])
+	}
+	// Only the representative claim names the rejected window.
+	a.Quota.Signals = map[string]string{
+		"Anthropic-Ratelimit-Unified-Status":               "rejected",
+		"Anthropic-Ratelimit-Unified-Representative-Claim": "five_hour",
+		"Anthropic-Ratelimit-Unified-5h-Utilization":       "0.87",
+		"Anthropic-Ratelimit-Unified-7d-Utilization":       "0.11",
+	}
+	got = byName(AccountBalanceWindows(a))
+	if got["5h"].UsedPercent != 100 || got["7d"].UsedPercent != 11 {
+		t.Fatalf("claim-rejected windows = %+v", got)
+	}
+	// An allowed response keeps the reported utilization.
+	a.Quota.Signals = map[string]string{"Anthropic-Ratelimit-Unified-Status": "allowed", "Anthropic-Ratelimit-Unified-5h-Status": "allowed", "Anthropic-Ratelimit-Unified-5h-Utilization": "0.87"}
+	if got = byName(AccountBalanceWindows(a)); got["5h"].UsedPercent != 87 {
+		t.Fatalf("allowed 5h window = %+v", got["5h"])
+	}
+}
+
 // withShortWindow adds a 5h observation at now and history samples given as
 // minutes-ago → used percent.
 func withShortWindow(a *Auth, used float64, reset, now time.Time, history map[int]float64) *Auth {

@@ -15,6 +15,7 @@ go test ./... # Run all tests
 go test -v -run TestName ./path/to/pkg # Run single test
 go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
 ```
+- Run Go as `command go …` (e.g. `command go test ./...`): the shell profile aliases bare `go` to `git checkout`, so `go test ./pkg` silently discards uncommitted edits under `./pkg`.
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
 ## Config
